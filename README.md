@@ -10,7 +10,7 @@ To compile, all source files must be transferred to the Pico's flash memory. Thi
 
 Once transferred, unplug the Pico and plug it in while holding the BOOTSEL button to boot it in BOOTSEL mode. A removable volume will be mounted to your device, typically under the name `NO-NAME`.
 
-In a command prompt, use the following command to extract the UF2 from the Pico:
+In a command line program, use the following command to extract the UF2 from the Pico:
 
 ```bash
 picotool save -a <PICO_VOLUME_PATH> <DESTINATION_PATH> -t uf2
