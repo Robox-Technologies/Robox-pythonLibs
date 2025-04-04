@@ -1,8 +1,7 @@
 # 
 # _____  ____ _____  ____ __  __
 # | () )/ () \| () )/ () \\ \/ /
-# |_|\_\\____/|_()_)\____//_/\_\
-# 
+# |_|\_\\____/|_()_)\____//_/\_\n# 
 # 
 # This is generated code from the block code editor.
 # All code is written by me!
