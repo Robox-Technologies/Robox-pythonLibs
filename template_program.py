@@ -1,4 +1,4 @@
-from roboxlib import Motors, LineSensors, UltrasonicSensor
+from pico.roboxlib import Motors, LineSensors, UltrasonicSensor
 from machine import Pin, Timer
 import time
 import json
