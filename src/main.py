@@ -61,7 +61,7 @@ if isUSBConnected(): # THIS DOES NOT ALWAYS CONNECT
             
             # Program upload
             elif dataStripped == "x04":
-                print(generatePrint("console", "Program has been recieved"))
+                print(generatePrint("download", "Program has been recieved"))
                 # Don't read termination line
                 readingFile = False
                 led.on()
@@ -94,5 +94,6 @@ else:
     protectedProgCall()
 
     
+
 
 
