@@ -19,8 +19,9 @@ SIE_STATUS=const(0x50110000+0x50)
 CONNECTED=const(1<<16)
 SUSPENDED=const(1<<4)
 def isUSBConnected():
-    charging = machine.Pin('GPIO24', machine.Pin.IN)
-    return charging.value()
+    time.sleep(0.1)
+    vbus = machine.Pin('WL_GPIO2', machine.Pin.IN)
+    return vbus()
 
 def protectedProgCall():
     try:
@@ -94,6 +95,7 @@ else:
     protectedProgCall()
 
     
+
 
 
 
