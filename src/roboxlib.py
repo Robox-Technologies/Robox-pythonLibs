@@ -8,8 +8,33 @@
 # All code is written by me!
 # 
 
-from machine import Pin, PWM, time_pulse_us
+from machine import Pin, PWM, time_pulse_us, I2C
 from utime import sleep, sleep_us
+import ustruct
+import json
+
+_COMMAND_BIT = const(0x80)
+
+_REGISTER_ENABLE = const(0x00)
+_REGISTER_ATIME = const(0x01)
+
+_REGISTER_CONTROL = const(0x0f)
+
+_REGISTER_SENSORID = const(0x12)
+
+_REGISTER_STATUS = const(0x13)
+_REGISTER_CDATA = const(0x14)
+_REGISTER_RDATA = const(0x16)
+_REGISTER_GDATA = const(0x18)
+_REGISTER_BDATA = const(0x1a)
+
+_ENABLE_AEN = const(0x02)
+_ENABLE_PON = const(0x01)
+
+_GAINS = (1, 4, 16, 60)
+
+_CALIBRATION_KEY = "colorCalibration"
+_CALIBRATION_DEFAULT = [160.14, 87.63174, 62.94521]
 
 class Motors:
     def __init__(self, a1_pin=13, a2_pin=12, b1_pin=11, b2_pin=10):
@@ -106,3 +131,206 @@ class LineSensors:
     
     def read_line_position(self):
         return [self.sensor_left.value(), self.sensor_right.value()]
+
+class ColorSensor:
+    def __init__(self, i2c=I2C(0, sda=Pin(20), scl=Pin(21)), address=0x29):
+        self.i2c = i2c
+        self.address = address
+        self._active = False
+        self.integration_time(2.4)
+        self.gain(60)
+        self.active(True)
+        self.loadCalibration()
+        
+        sensor_id = self.sensor_id()
+        if sensor_id not in (0x44, 0x10, 0x4d):
+            raise RuntimeError("wrong sensor id 0x{:x}".format(sensor_id))
+    
+    def loadCalibration(self):
+        # Load calibration data
+        config = { _CALIBRATION_KEY: _CALIBRATION_DEFAULT }
+        
+        try:
+            with open('config.json', 'r') as configFile:
+                config = json.load(configFile)
+        except:
+            with open('config.json', 'w') as configFile:
+                json.dump(config, configFile)
+        
+        self.calibration = config[_CALIBRATION_KEY]
+    
+    def calibrate(self):
+        # Calibration steps:
+        # 1. Place Ro/Box on white calibration surface
+        # 2. Run this calibration method
+        # 3. Calibration will automatically save. Enjoy!
+        maxR = maxG = maxB = 0
+    
+        for _ in range(10):
+            r, g, b = self.readColor(raw=True)
+            
+            maxR = max(r, maxR)
+            maxG = max(g, maxG)
+            maxB = max(b, maxB)
+            
+        self.calibration = [maxR, maxG, maxB]
+        with open('config.json', 'w') as configFile:
+            json.dump({ _CALIBRATION_KEY: self.calibration }, configFile)
+    
+    def resetCalibration(self):
+        with open('config.json', 'w') as configFile:
+            json.dump({ _CALIBRATION_KEY: _CALIBRATION_DEFAULT }, configFile)
+
+    def active(self, value=None):
+        if value is None:
+            return self._active
+        value = bool(value)
+        if self._active == value:
+            return
+        self._active = value
+        enable = self._register8(_REGISTER_ENABLE)
+        if value:
+            self._register8(_REGISTER_ENABLE, enable | _ENABLE_PON)
+            sleep_us(3000)
+            self._register8(_REGISTER_ENABLE,
+                enable | _ENABLE_PON | _ENABLE_AEN)
+        else:
+            self._register8(_REGISTER_ENABLE,
+                enable & ~(_ENABLE_PON | _ENABLE_AEN))
+
+    def sensor_id(self):
+        return self._register8(_REGISTER_SENSORID)
+
+    def integration_time(self, value=None):
+        if value is None:
+            return self._integration_time
+        value = min(614.4, max(2.4, value))
+        cycles = int(value / 2.4)
+        self._integration_time = cycles * 2.4
+        return self._register8(_REGISTER_ATIME, 256 - cycles)
+
+    def gain(self, value):
+        if value is None:
+            return _GAINS[self._register8(_REGISTER_CONTROL)]
+        if value not in _GAINS:
+            raise ValueError("gain must be 1, 4, 16 or 60")
+        return self._register8(_REGISTER_CONTROL, _GAINS.index(value))
+
+    def readColor(self, raw=False):
+        was_active = self.active()
+        self.active(True)
+        while not self._valid():
+            sleep_us(int(self._integration_time + 0.9) * 1000)
+        data = tuple(self._register16(register) for register in (
+            _REGISTER_RDATA,
+            _REGISTER_GDATA,
+            _REGISTER_BDATA,
+            _REGISTER_CDATA,
+        ))
+        self.active(was_active)
+        
+        rgb = self._parse_rgb(data)
+        if raw:
+            return rgb
+        else:
+            r, g, b = self._calibrated_rgb(rgb)
+            return r, g, b
+
+    def _register8(self, register, value=None):
+        register |= _COMMAND_BIT
+        if value is None:
+            return self.i2c.readfrom_mem(self.address, register, 1)[0]
+        data = ustruct.pack('<B', value)
+        self.i2c.writeto_mem(self.address, register, data)
+
+    def _register16(self, register, value=None):
+        register |= _COMMAND_BIT
+        if value is None:
+            data = self.i2c.readfrom_mem(self.address, register, 2)
+            return ustruct.unpack('<H', data)[0]
+        data = ustruct.pack('<H', value)
+        self.i2c.writeto_mem(self.address, register, data)
+
+    def _valid(self):
+        return bool(self._register8(_REGISTER_STATUS) & 0x01)
+
+    def _parse_rgb(self, data):
+        r, g, b, c = data
+        
+        # No light: return black (prevent div 0 error)
+        if c == 0:
+            return 0, 0, 0
+        
+        red = pow((int((r/c) * 256) / 255), 2.5) * c
+        green = pow((int((g/c) * 256) / 255), 2.5) * c
+        blue = pow((int((b/c) * 256) / 255), 2.5) * c
+        
+        return red, green, blue
+    
+    def _calibrated_rgb(self, rgb):
+        r, g, b = rgb
+        calibratedR = r/self.calibration[0]
+        calibratedG = g/self.calibration[1]
+        calibratedB = b/self.calibration[2]
+        maxClr = max(max(max(calibratedR, calibratedG), calibratedB), 1)
+        clrFac = 255/maxClr
+        calibratedR = calibratedR * clrFac
+        calibratedG = calibratedG * clrFac
+        calibratedB = calibratedB * clrFac
+        return self._boost_contrast([calibratedR, calibratedG, calibratedB])
+    
+    def _boost_contrast(self, rgb, factor=2):
+        h, s, v = rgb_to_hsv(*rgb)
+        s = min(s*factor, 1)
+        
+        return hsv_to_rgb(h, s, v)
+    
+def rgb_to_hsv(r, g, b):
+    r, g, b = r / 255.0, g / 255.0, b / 255.0  # Normalize to [0,1]
+    max_c = max(r, g, b)
+    min_c = min(r, g, b)
+    delta = max_c - min_c
+
+    # Hue
+    if delta == 0:
+        h = 0
+    elif max_c == r:
+        h = (60 * ((g - b) / delta)) % 360
+    elif max_c == g:
+        h = (60 * ((b - r) / delta)) + 120
+    elif max_c == b:
+        h = (60 * ((r - g) / delta)) + 240
+
+    # Saturation
+    s = 0 if max_c == 0 else delta / max_c
+
+    # Value
+    v = max_c
+
+    return h, s, v  # h in [0,360), s and v in [0,1]
+
+def hsv_to_rgb(h, s, v):
+    c = v * s  # Chroma
+    x = c * (1 - abs((h / 60) % 2 - 1))
+    m = v - c
+
+    if 0 <= h < 60:
+        rp, gp, bp = c, x, 0
+    elif 60 <= h < 120:
+        rp, gp, bp = x, c, 0
+    elif 120 <= h < 180:
+        rp, gp, bp = 0, c, x
+    elif 180 <= h < 240:
+        rp, gp, bp = 0, x, c
+    elif 240 <= h < 300:
+        rp, gp, bp = x, 0, c
+    elif 300 <= h < 360:
+        rp, gp, bp = c, 0, x
+    else:
+        rp, gp, bp = 0, 0, 0  # fallback
+
+    r = int((rp + m) * 255)
+    g = int((gp + m) * 255)
+    b = int((bp + m) * 255)
+
+    return r, g, b
