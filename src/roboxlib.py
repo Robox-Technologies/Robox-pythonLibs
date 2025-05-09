@@ -166,8 +166,8 @@ class ColorSensor:
         # 3. Calibration will automatically save. Enjoy!
         maxR = maxG = maxB = 0
     
-        for i in range(10):
-            r, g, b = colorSensor.readColor(raw=True)
+        for _ in range(10):
+            r, g, b = self.readColor(raw=True)
             
             maxR = max(r, maxR)
             maxG = max(g, maxG)
