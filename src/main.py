@@ -3,99 +3,92 @@ import sys
 import time
 import json
 import _thread
-
 import machine
 
-led = machine.Pin(25, machine.Pin.OUT)
+# Constants
+LED = machine.Pin(25, machine.Pin.OUT)
+USB_CHARGING_PIN = machine.Pin('GPIO24', machine.Pin.IN)
+PROGRAM_FILENAME = "program.py"
 
-led.on()
+# Command dictionary
+COMMANDS = {
+    "x021STARTPROG": "start_program",
+    "x032BEGINUPLD": "begin_upload",
+    "x04": "end_upload",
+    "x019FIRMCHECK": "firmware_check",
+    "x069": "reset_device"
+}
 
-# Polling object
-poll_obj = select.poll()
-poll_obj.register(sys.stdin, select.POLLIN)
+# USB Connection check
+def is_usb_connected():
+    return USB_CHARGING_PIN.value()
 
-# TEST: Check if USB port is connected
-SIE_STATUS=const(0x50110000+0x50)
-CONNECTED=const(1<<16)
-SUSPENDED=const(1<<4)
-def isUSBConnected():
-    time.sleep(0.1)
-    vbus = machine.Pin('WL_GPIO2', machine.Pin.IN)
-    return vbus()
+# JSON message formatter
+def generate_message(msg_type, message):
+    return json.dumps({"type": msg_type, "message": message})
 
-def protectedProgCall():
+# Safely run user program
+def run_user_program():
     try:
         import program
-    except Exception as e: # Program/Misc error
-        print(generatePrint("error", e))
-    
-    # We may need to do a restart so we can use the program again
-    # machine.soft_reset()
+    except Exception as e:
+        print(generate_message("error", str(e)))
 
-def generatePrint(typ, message):
-    jsmessage = {"type": typ, "message": message}
-    return json.dumps(jsmessage)
-if isUSBConnected(): # THIS DOES NOT ALWAYS CONNECT
-    # Boot into program/test mode
+# Main USB communication handler
+def usb_mode():
     print("Device is connected: Boot into PROG/TEST mode")
-    
-    readingFile = False
-    outFilename = "program.py" # Name of program file
-    outFile = False
+    poller = select.poll()
+    poller.register(sys.stdin, select.POLLIN)
+
+    out_file = None
+
     while True:
-        poll_results = poll_obj.poll(1) # Delay 1 microsecond before polling
-        
-        if poll_results:
-            # Read the data from stdin (read data coming from PC)
-            
-            data = sys.stdin.readline()
-            dataStripped = data.strip() # Use this to read exact system commands
-            # Program begin
-            if (dataStripped == ""):
-                continue
-            if dataStripped == "x021STARTPROG":
-                led.on()
-                print(generatePrint("console", "Starting the program"))
-                _thread.start_new_thread(protectedProgCall, ())
-                
-                continue
-            
-            # Program upload
-            elif dataStripped == "x04":
-                print(generatePrint("download", "Program has been recieved"))
-                # Don't read termination line
-                readingFile = False
-                led.on()
-                
-                # Close file
-                outFile.close()
-                outFile = False
-            elif dataStripped == "x019FIRMCHECK":
-                print(generatePrint("confirmation", True))
-            elif dataStripped == "x032BEGINUPLD":
-                open(outFilename, 'w').close() # Clear file
-                outFile = open(outFilename, "w") # Open file for writing
-                print(generatePrint("console", "Ready to receive program"))
-            elif dataStripped == "x069":
-                machine.reset()
-                
-            elif(not outFile == False):
-                led.toggle() # Flash LED for debug
-                
-                # Write the data to program file
-                outFile.write(data)
-        else:
-            # No response, check if USB is still alive
-#             if not isUSBConnected():
-#                 machine.soft_reset() # Restart
-            
+        events = poller.poll(1)
+        if not events:
             continue
-else:
-    print("Device not connected: Run program immediately if available")
-    protectedProgCall()
 
-    
+        data = sys.stdin.readline().strip()
+        if not data:
+            continue
 
+        command = COMMANDS.get(data)
 
+        if command == "start_program":
+            LED.on()
+            print(generate_message("console", "Starting the program"))
+            _thread.start_new_thread(run_user_program, ())
 
+        elif command == "begin_upload":
+            with open(PROGRAM_FILENAME, 'w'):
+                pass  # Clear file
+            out_file = open(PROGRAM_FILENAME, "w")
+            print(generate_message("console", "Ready to receive program"))
+
+        elif command == "end_upload":
+            if out_file:
+                out_file.close()
+                out_file = None
+            LED.on()
+            print(generate_message("download", "Program has been received"))
+
+        elif command == "firmware_check":
+            print(generate_message("confirmation", True))
+
+        elif command == "reset_device":
+            machine.reset()
+
+        elif out_file:
+            LED.toggle()
+            out_file.write(data + "\n")
+
+# Entry point
+def main():
+    LED.on()
+    if is_usb_connected():
+        usb_mode()
+    else:
+        print("Device not connected: Run program immediately if available")
+        run_user_program()
+
+main()
 
