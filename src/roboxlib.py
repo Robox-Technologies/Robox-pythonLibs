@@ -35,6 +35,16 @@ _GAINS = (1, 4, 16, 60)
 
 _CALIBRATION_KEY = "colorCalibration"
 _CALIBRATION_DEFAULT = [160.14, 87.63174, 62.94521]
+_STANDARD_COLORS = {
+                    "red": (255, 0, 0),
+                    "orange": (255, 165, 0),
+                    "yellow": (255, 255, 0),
+                    "green": (0, 128, 0),
+                    "blue": (0, 0, 255),
+                    "purple": (128, 0, 128),
+                    "black": (0, 0, 0),
+                    "white": (255, 255, 255)
+                }
 
 class Motors:
     def __init__(self, a1_pin=13, a2_pin=12, b1_pin=11, b2_pin=10):
@@ -253,7 +263,7 @@ class ColorSensor:
 
     def _valid(self):
         return bool(self._register8(_REGISTER_STATUS) & 0x01)
-
+    
     def _parse_rgb(self, data):
         r, g, b, c = data
         
@@ -266,7 +276,17 @@ class ColorSensor:
         blue = pow((int((b/c) * 256) / 255), 2.5) * c
         
         return red, green, blue
-    
+    def closest_colour_name(self):
+        r, g, b = self.readColor()
+        closest = sorted(
+            _STANDARD_COLORS.items(),
+            key=lambda item: self.distance((r, g, b), item[1])
+        )[0][0]
+        return closest
+    def distance(self, c1, c2):
+        return ((c1[0] - c2[0]) ** 2 +
+                (c1[1] - c2[1]) ** 2 +
+                (c1[2] - c2[2]) ** 2) ** 0.5
     def _calibrated_rgb(self, rgb):
         r, g, b = rgb
         calibratedR = r/self.calibration[0]
@@ -334,3 +354,4 @@ def hsv_to_rgb(h, s, v):
     b = int((bp + m) * 255)
 
     return r, g, b
+
