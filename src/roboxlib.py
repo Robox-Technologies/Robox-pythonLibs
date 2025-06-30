@@ -1,3 +1,4 @@
+
 # 
 # _____  ____ _____  ____ __  __
 # | () )/ () \| () )/ () \\ \/ /
@@ -12,6 +13,7 @@ from machine import Pin, PWM, time_pulse_us, I2C
 from utime import sleep, sleep_us
 import ustruct
 import json
+import time
 
 _COMMAND_BIT = const(0x80)
 
@@ -177,7 +179,7 @@ class ColorSensor:
         maxR = maxG = maxB = 0
     
         for _ in range(10):
-            r, g, b = self.readColor(raw=True)
+            r, g, b, c = self.readColor(raw=True)
             
             maxR = max(r, maxR)
             maxG = max(g, maxG)
@@ -266,29 +268,50 @@ class ColorSensor:
     
     def _parse_rgb(self, data):
         r, g, b, c = data
-        
-        # No light: return black (prevent div 0 error)
         if c == 0:
             return 0, 0, 0
-        
-        red = pow((int((r/c) * 256) / 255), 2.5) * c
-        green = pow((int((g/c) * 256) / 255), 2.5) * c
-        blue = pow((int((b/c) * 256) / 255), 2.5) * c
-        
-        return red, green, blue
+        ir = max((r + g + b - c) // 2, 0)
+        r = max(0, r - ir)
+        g = max(0, g - ir)
+        b = max(0, b - ir)
+        return r / c, g / c, b / c, c
     def closest_colour_name(self):
         r, g, b = self.readColor()
-        closest = sorted(
-            _STANDARD_COLORS.items(),
-            key=lambda item: self.distance((r, g, b), item[1])
-        )[0][0]
-        return closest
-    def distance(self, c1, c2):
-        return ((c1[0] - c2[0]) ** 2 +
-                (c1[1] - c2[1]) ** 2 +
-                (c1[2] - c2[2]) ** 2) ** 0.5
-    def _calibrated_rgb(self, rgb):
-        r, g, b = rgb
+        h, s, v = rgb_to_hsv(r, g, b)
+
+        # Quick white/black check
+        if s < 0.1 and v > 0.9:
+            return "white"
+        if v < 0.1:
+            return "black"
+
+        # Heuristic: if hue is in cyan range and value is low, prefer green
+        # Cyan roughly around 180° to 210°
+        if 180 <= h <= 210 and v < 0.5:
+            return "green"
+
+        def hue_distance(h1, h2):
+            d = abs(h1 - h2)
+            return min(d, 360 - d) / 180  # normalized 0 to 1
+
+        best_match = None
+        best_score = float('inf')
+
+        for name, (r_std, g_std, b_std) in _STANDARD_COLORS.items():
+            h_std, s_std, v_std = rgb_to_hsv(r_std, g_std, b_std)
+            hd = hue_distance(h, h_std)
+            sd = abs(s - s_std)
+            vd = abs(v - v_std)
+
+            score = hd * 3 + sd * 1 + vd * 1
+
+            if score < best_score:
+                best_score = score
+                best_match = name
+
+        return best_match
+    def _calibrated_rgb(self, rgbc):
+        r, g, b, c = rgbc
         calibratedR = r/self.calibration[0]
         calibratedG = g/self.calibration[1]
         calibratedB = b/self.calibration[2]
@@ -299,10 +322,11 @@ class ColorSensor:
         calibratedB = calibratedB * clrFac
         return self._boost_contrast([calibratedR, calibratedG, calibratedB])
     
-    def _boost_contrast(self, rgb, factor=2):
+    def _boost_contrast(self, rgb, factor=1.5, threshold=0.15):
         h, s, v = rgb_to_hsv(*rgb)
-        s = min(s*factor, 1)
-        
+        if s > threshold:
+            s = s + (1 - s) * (factor - 1)
+            s = min(s, 1)
         return hsv_to_rgb(h, s, v)
     
 def rgb_to_hsv(r, g, b):
@@ -354,4 +378,14 @@ def hsv_to_rgb(h, s, v):
     b = int((bp + m) * 255)
 
     return r, g, b
+if __name__ == "__main__":
+    color_sensor = ColorSensor()
+    color_sensor.calibrate()
+    # motors.run_motors(-100, 100)
+    while True:
+        r, g, b = color_sensor.readColor()
+        color = color_sensor.closest_colour_name()
+        print(f"RGB: ({r}, {g}, {b}), COLOR: {color}", "\n")
+        time.sleep(2)
+
 
