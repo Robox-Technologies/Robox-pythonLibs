@@ -1,4 +1,3 @@
-
 # 
 # _____  ____ _____  ____ __  __
 # | () )/ () \| () )/ () \\ \/ /
@@ -13,7 +12,6 @@ from machine import Pin, PWM, time_pulse_us, I2C
 from utime import sleep, sleep_us
 import ustruct
 import json
-import time
 
 _COMMAND_BIT = const(0x80)
 
@@ -37,16 +35,13 @@ _GAINS = (1, 4, 16, 60)
 
 _CALIBRATION_KEY = "colorCalibration"
 _CALIBRATION_DEFAULT = [160.14, 87.63174, 62.94521]
-_STANDARD_COLORS = {
-                    "red": (255, 0, 0),
-                    "orange": (255, 165, 0),
-                    "yellow": (255, 255, 0),
-                    "green": (0, 128, 0),
-                    "blue": (0, 0, 255),
-                    "purple": (128, 0, 128),
-                    "black": (0, 0, 0),
-                    "white": (255, 255, 255)
-                }
+
+_MIN_S = 1300
+_MAX_S = 8500
+
+_MIN_ANGLE = 0
+_MAX_ANGLE = 180
+
 
 class Motors:
     def __init__(self, a1_pin=13, a2_pin=12, b1_pin=11, b2_pin=10):
@@ -135,7 +130,18 @@ class UltrasonicSensor:
             echo_time = self.FALLBACK_ECHO
         
         return self.convert_us_to_cm(echo_time/2) # Halve time to remove return trip time
-
+class Servo:
+    def __init__(self, pin=0):
+        self.servo = PWM(Pin(pin))
+        self.servo.freq(50)
+    def angle_to_pulse(self, angle):
+        mapped = (angle - _MIN_ANGLE) * (_MAX_S - _MIN_S) / (_MAX_ANGLE - _MIN_ANGLE) + _MIN_S
+        return int(max(min(mapped, _MAX_S), _MIN_S))
+    def rotate_to_angle(self, angle):
+        pulse = self.angle_to_pulse(angle)
+        self.servo.duty_u16(pulse)
+        sleep(0.2)
+    
 class LineSensors:
     def __init__(self, left_pin=3, right_pin=2):
         self.sensor_left = Pin(left_pin, Pin.IN)
@@ -179,7 +185,7 @@ class ColorSensor:
         maxR = maxG = maxB = 0
     
         for _ in range(10):
-            r, g, b, c = self.readColor(raw=True)
+            r, g, b = self.readColor(raw=True)
             
             maxR = max(r, maxR)
             maxG = max(g, maxG)
@@ -265,53 +271,22 @@ class ColorSensor:
 
     def _valid(self):
         return bool(self._register8(_REGISTER_STATUS) & 0x01)
-    
+
     def _parse_rgb(self, data):
         r, g, b, c = data
+        
+        # No light: return black (prevent div 0 error)
         if c == 0:
             return 0, 0, 0
-        ir = max((r + g + b - c) // 2, 0)
-        r = max(0, r - ir)
-        g = max(0, g - ir)
-        b = max(0, b - ir)
-        return r / c, g / c, b / c, c
-    def closest_colour_name(self):
-        r, g, b = self.readColor()
-        h, s, v = rgb_to_hsv(r, g, b)
-
-        # Quick white/black check
-        if s < 0.1 and v > 0.9:
-            return "white"
-        if v < 0.1:
-            return "black"
-
-        # Heuristic: if hue is in cyan range and value is low, prefer green
-        # Cyan roughly around 180° to 210°
-        if 180 <= h <= 210 and v < 0.5:
-            return "green"
-
-        def hue_distance(h1, h2):
-            d = abs(h1 - h2)
-            return min(d, 360 - d) / 180  # normalized 0 to 1
-
-        best_match = None
-        best_score = float('inf')
-
-        for name, (r_std, g_std, b_std) in _STANDARD_COLORS.items():
-            h_std, s_std, v_std = rgb_to_hsv(r_std, g_std, b_std)
-            hd = hue_distance(h, h_std)
-            sd = abs(s - s_std)
-            vd = abs(v - v_std)
-
-            score = hd * 3 + sd * 1 + vd * 1
-
-            if score < best_score:
-                best_score = score
-                best_match = name
-
-        return best_match
-    def _calibrated_rgb(self, rgbc):
-        r, g, b, c = rgbc
+        
+        red = pow((int((r/c) * 256) / 255), 2.5) * c
+        green = pow((int((g/c) * 256) / 255), 2.5) * c
+        blue = pow((int((b/c) * 256) / 255), 2.5) * c
+        
+        return red, green, blue
+    
+    def _calibrated_rgb(self, rgb):
+        r, g, b = rgb
         calibratedR = r/self.calibration[0]
         calibratedG = g/self.calibration[1]
         calibratedB = b/self.calibration[2]
@@ -322,11 +297,10 @@ class ColorSensor:
         calibratedB = calibratedB * clrFac
         return self._boost_contrast([calibratedR, calibratedG, calibratedB])
     
-    def _boost_contrast(self, rgb, factor=1.5, threshold=0.15):
+    def _boost_contrast(self, rgb, factor=2):
         h, s, v = rgb_to_hsv(*rgb)
-        if s > threshold:
-            s = s + (1 - s) * (factor - 1)
-            s = min(s, 1)
+        s = min(s*factor, 1)
+        
         return hsv_to_rgb(h, s, v)
     
 def rgb_to_hsv(r, g, b):
@@ -378,14 +352,3 @@ def hsv_to_rgb(h, s, v):
     b = int((bp + m) * 255)
 
     return r, g, b
-if __name__ == "__main__":
-    color_sensor = ColorSensor()
-    color_sensor.calibrate()
-    # motors.run_motors(-100, 100)
-    while True:
-        r, g, b = color_sensor.readColor()
-        color = color_sensor.closest_colour_name()
-        print(f"RGB: ({r}, {g}, {b}), COLOR: {color}", "\n")
-        time.sleep(2)
-
-
