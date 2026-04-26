@@ -1,15 +1,15 @@
 # 
 # _____  ____ _____  ____ __  __
 # | () )/ () \| () )/ () \\ \/ /
-# |_|\_\\____/|_()_)\____//_/\_\
-# 
+# |_|\_\\____/|_()_)\____//_/\_\n# 
 # 
 # This is generated code from the block code editor.
 # All code is written by me!
 # 
 
 from machine import Pin, PWM, time_pulse_us, I2C
-from utime import sleep, sleep_us
+from utime import sleep, sleep_us, ticks_diff, ticks_ms
+
 import ustruct
 import json
 
@@ -102,12 +102,28 @@ class UltrasonicSensor:
         
         self.echo = Pin(echo_pin, Pin.IN)
         
+        self.last_distance = None
+        self.last_read_time = 0
+        self.min_interval_ms = 50  # 20Hz max refresh
+        
         self.FALLBACK_ECHO = echo_timeout*1.2 # Some fallback beyond timeout range
     
     def convert_us_to_cm(self, us_time):
         return us_time / (10_000 / 343)
-    
     def distance(self):
+        now = ticks_ms()
+
+        # If called too soon, return cached value
+        if ticks_diff(now, self.last_read_time) < self.min_interval_ms:
+            return self.last_distance if self.last_distance is not None else 999
+
+        self.last_read_time = now
+
+        new_distance = self._single_read()
+
+        self.last_distance = new_distance
+        return new_distance
+    def _single_read(self):
         # Ensure trig is LOW
         self.trig.value(0)
         sleep_us(5)
@@ -122,7 +138,6 @@ class UltrasonicSensor:
         try:
             echo_time = time_pulse_us(self.echo, 1, self.echo_timeout)
             if echo_time < 0:
-                print(echo_time)
                 echo_time = self.FALLBACK_ECHO
         except OSError as ex:
             
@@ -131,16 +146,14 @@ class UltrasonicSensor:
         
         return self.convert_us_to_cm(echo_time/2) # Halve time to remove return trip time
 class Servo:
-    def __init__(self, pin=0):
+    def __init__(self, pin=20):
         self.servo = PWM(Pin(pin))
         self.servo.freq(50)
-        self.angle = 0
     def angle_to_pulse(self, angle):
         mapped = (angle - _MIN_ANGLE) * (_MAX_S - _MIN_S) / (_MAX_ANGLE - _MIN_ANGLE) + _MIN_S
         return int(max(min(mapped, _MAX_S), _MIN_S))
     def rotate_to_angle(self, angle):
         pulse = self.angle_to_pulse(angle)
-        self.angle = angle
         self.servo.duty_u16(pulse)
         sleep(0.2)
     
