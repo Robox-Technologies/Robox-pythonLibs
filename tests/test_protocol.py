@@ -335,6 +335,59 @@ class TestAdaptivePacer(unittest.TestCase):
         self.assertGreater(pacer.delay_ms, 30)
         self.assertLessEqual(pacer.delay_ms, p.MAX_CHUNK_DELAY_MS)
 
+    def test_one_backoff_per_loss_episode(self):
+        """Go-back-N NAKs a whole run of frames for one bad patch of radio.
+
+        Treating each NAK as its own congestion signal compounded the factor
+        repeatedly and sent the delay to the ceiling for something that
+        warranted a single step. Measured on hardware as a 38% goodput
+        regression against a fixed delay.
+        """
+        pacer = p.AdaptivePacer(delay_ms=21)
+        for _ in range(6):
+            pacer.on_loss()
+
+        self.assertEqual(pacer.backoffs, 1)
+        self.assertEqual(pacer.episodes_ignored, 5)
+        self.assertLess(pacer.delay_ms, 30)
+
+    def test_a_clean_batch_rearms_the_backoff(self):
+        pacer = p.AdaptivePacer(delay_ms=21)
+        pacer.on_loss()
+        pacer.on_loss()
+        self.assertEqual(pacer.backoffs, 1)
+
+        pacer.on_clean_batch()
+        pacer.on_loss()
+        self.assertEqual(pacer.backoffs, 2)
+
+    def test_recovery_time_is_independent_of_how_far_it_backed_off(self):
+        """A fixed step made recovery from the ceiling longer than an upload."""
+        def probes_back_to_floor(start):
+            pacer = p.AdaptivePacer(delay_ms=start)
+            probes = 0
+            while pacer.delay_ms > p.MIN_CHUNK_DELAY_MS and probes < 1000:
+                pacer.on_clean_batch()
+                pacer.on_clean_batch()
+                probes += 1
+            return probes
+
+        from_ceiling = probes_back_to_floor(p.MAX_CHUNK_DELAY_MS)
+        self.assertLess(from_ceiling, 20, "recovery from the ceiling too slow")
+        self.assertLess(probes_back_to_floor(26), 5)
+
+    def test_tracks_where_it_spent_its_time(self):
+        """Min and max cannot show this, and it is what diagnosed the bug."""
+        pacer = p.AdaptivePacer(delay_ms=40)
+        for _ in range(3):
+            pacer.delay_seconds()
+        self.assertEqual(pacer.mean_delay_ms(), 40.0)
+
+        pacer.on_loss()
+        for _ in range(1):
+            pacer.delay_seconds()
+        self.assertGreater(pacer.mean_delay_ms(), 40.0)
+
     def test_loss_resets_the_clean_streak(self):
         """Otherwise a single clean batch after loss would probe straight back."""
         pacer = p.AdaptivePacer(delay_ms=40, clean_before_probe=2)
@@ -352,15 +405,17 @@ class TestAdaptivePacer(unittest.TestCase):
     def test_converges_around_a_links_true_capacity(self):
         """Simulate a link that loses below `capacity` and check where it sits.
 
-        The controller cannot know `capacity`; it only sees loss. This asserts
-        it ends up near it rather than oscillating to an extreme.
+        Loss arrives in bursts of NAKs, because that is what go-back-N produces
+        from one bad patch. An earlier version of this test used a single loss
+        per event and passed while the controller was badly broken on hardware.
         """
         for capacity in (24, 28, 34, 45):
             pacer = p.AdaptivePacer()
             seen = []
             for _ in range(400):
                 if pacer.delay_ms < capacity:
-                    pacer.on_loss()
+                    for _ in range(6):
+                        pacer.on_loss()
                 else:
                     pacer.on_clean_batch()
                 seen.append(pacer.delay_ms)
@@ -374,6 +429,11 @@ class TestAdaptivePacer(unittest.TestCase):
             self.assertLess(
                 abs(average - capacity), capacity * 0.35,
                 "capacity %d: settled at %.1f, too far off" % (capacity, average),
+            )
+            self.assertLessEqual(
+                max(settled), capacity * 1.6,
+                "capacity %d: spiked to %d, a burst is one episode"
+                % (capacity, max(settled)),
             )
 
     def test_state_survives_for_the_next_upload(self):

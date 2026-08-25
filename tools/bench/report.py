@@ -69,13 +69,23 @@ def render(report):
         summary["retransmits"]))
     pacing = summary.get("final_pacing")
     if pacing:
+        # The mean is the number that matters: min and max cannot show where
+        # the controller actually spent its time, and that is what exposed it
+        # oscillating between the floor and the ceiling.
         lines.append(
-            "pacing settled       %sms (floor %sms, ranged %s-%sms, "
-            "%d probe(s), %d backoff(s))"
+            "pacing               mean %sms, ended %sms (floor %sms, "
+            "ranged %s-%sms)"
             % (
-                pacing["delay_ms"], pacing["floor_ms"],
-                pacing["fastest_ms"], pacing["slowest_ms"],
+                pacing.get("mean_delay_ms"), pacing["delay_ms"],
+                pacing["floor_ms"], pacing["fastest_ms"], pacing["slowest_ms"],
+            )
+        )
+        lines.append(
+            "                     %d probe(s), %d backoff(s), "
+            "%s further loss(es) coalesced into those episodes"
+            % (
                 pacing["probes"], pacing["backoffs"],
+                pacing.get("episodes_ignored", 0),
             )
         )
     if summary["gave_up"]:

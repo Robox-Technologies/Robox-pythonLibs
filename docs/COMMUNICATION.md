@@ -165,32 +165,74 @@ two drains to it at only 9600 baud with a small buffer of its own, so writes
 still have to be paced. Sweeping `--chunk-delay-ms` on this board and this
 radio environment:
 
-| delay | goodput | wire overhead | retransmits | `stress` wall time | integrity |
-|---|---|---|---|---|---|
-| 40 ms | 249 B/s | 1.40x | 0 | 27 s | 8/8 |
-| **30 ms** | **307 B/s** | 1.46x | 2 | 22 s | 8/8 |
-| 25 ms | 269 B/s | 1.96x | 5 | 27 s | 8/8 |
-| 20 ms | 93 B/s | 7.15x | 31 | 91 s | 8/8 |
+| delay | goodput | wire overhead | retransmits | `stress` wall time |
+|---|---|---|---|---|
+| 40 ms | 249 B/s | 1.40x | 0 | 27 s |
+| 30 ms | 307 B/s | 1.46x | 2 | 22 s |
+| 25 ms | 269 B/s | 1.96x | 5 | 27 s |
+| 20 ms | 93 B/s | 7.15x | 31 | 91 s |
 
-Two things to take from this.
+Integrity was 8/8 at every delay, which is the protocol doing its job.
 
-**It is a cliff, not a slope.** Below about 25 ms the HM-10 starts dropping
-writes, go-back-N repairs them, and the repairs cost more than the pacing
-saved. At 20 ms the run pushed 60 KB of wire traffic to deliver 7.2 KB of
-program. Integrity stays 8/8 throughout, which is the protocol doing its job,
-but goodput falls off a third of a cliff.
+**Treat the bottom row with suspicion.** This sweep was taken before the
+unbounded-retransmit bug in the harness was fixed, and that bug inflated both
+the retransmit count and the wall time whenever a peer went quiet. The 20 ms
+row is therefore not trustworthy, and the conclusion originally drawn from it,
+that there is a hard performance cliff just below 21 ms, is not supported.
+Later runs sat at 21 ms with 0 to 2 retransmits per corpus. Re-run the sweep
+before relying on it.
 
-**Faster is not better past the optimum.** 25 ms is *slower* than 30 ms
-despite writing sooner, because five retransmits cost more than the saved
-delay. The default stays at the conservative 40 ms; 30 ms is measurably better
-here, but this is one board in one RF environment and the downside of guessing
-low is a 3x collapse.
+What does survive is the arithmetic: one 20-byte chunk takes 20.83 ms to leave
+the HM-10 at 9600 baud, so pacing faster than that offers bytes faster than
+they can go. The floor is kept for that reason rather than for the measured
+collapse.
 
-Reproduce with:
+**Faster is not better past the optimum.** 25 ms is slower than 30 ms despite
+writing sooner, because retransmits cost more than the saved delay. That much
+is consistent across runs.
+
+## Adaptive versus fixed pacing
+
+First attempt, measured against a fixed 30 ms on the same board:
+
+| | fixed 30 ms | adaptive v1 |
+|---|---|---|
+| integrity | 8/8 | 8/8 |
+| goodput | **232 B/s** | 145 B/s |
+| wall clock | 40 s | 65 s |
+| retransmits | 10 | **5** |
+| delay range | fixed | 21-120 ms |
+
+The adaptive controller was **38% worse**, despite causing *fewer*
+retransmissions. Fewer retransmits and more wall time means the delay was
+self-inflicted, not loss-driven: 110 probes against 14 backoffs, and
+`edge_cases` finished at 114 ms with a goodput of 78 against 267 for fixed.
+
+The cause was a backoff cascade. Go-back-N resends a whole run of frames after
+a gap, so one bad patch of radio draws a NAK for each of them. The controller
+treated each NAK as its own congestion signal, compounded 1.3 six times, and
+reached the ceiling for something that warranted one step; a fixed 2 ms probe
+then needed eighty acknowledgements to climb back down, which is longer than
+most uploads. It spent its life crawling downhill.
+
+Both halves are now fixed: one backoff per loss *episode*, rearmed by the next
+clean acknowledgement, and a proportional probe so recovery does not depend on
+how far it went. The same six-NAK burst now costs one step and recovers in four
+acknowledgements instead of eighty.
+
+Re-run to confirm on radio:
 
 ```bash
-for d in 40 35 30 25; do ./tools/comm-bench --transport ble --chunk-delay-ms $d --out docs/ble-$d.json; done
+./tools/comm-bench --transport ble --out docs/ble-adaptive.json
 ```
+
+```bash
+./tools/comm-bench --transport ble --chunk-delay-ms 30 --out docs/ble-fixed30.json
+```
+
+The report prints a `pacing` line with the **mean** delay, which is the number
+that matters: the minimum and maximum cannot show where the controller spent
+its time, and that omission is what let the oscillation go unnoticed.
 
 ## Reading throughput
 

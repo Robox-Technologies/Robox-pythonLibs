@@ -129,12 +129,23 @@ what hid the problem.
 `AdaptivePacer` does additive decrease, multiplicative increase, on the delay:
 
 * an acknowledgement that **moves the window** is evidence the link is coping.
-  Two in a row and the delay drops 2 ms. A repeat of an ACK we already had
-  proves nothing and is ignored;
-* a NAK, a damaged frame, or a timeout multiplies the delay by 1.3.
+  Two in a row and the delay drops by a tenth. A repeat of an ACK we already
+  had proves nothing and is ignored;
+* a NAK, a damaged frame, or a timeout multiplies the delay by 1.25, **once per
+  loss episode**.
 
-Backing off hard and probing back gently is the right asymmetry: too fast
-costs a collapse, too slow costs a few percent.
+Those last three words carry the design. Go-back-N resends a whole run of
+frames after a gap, so one bad patch of radio draws a NAK for each of them.
+Treating each as its own congestion signal compounds the factor repeatedly and
+reaches the ceiling for something that warranted a single step; measured on
+hardware, that cost 38% of goodput against a fixed delay while causing *fewer*
+retransmissions than it. A backoff therefore disarms until the next clean
+acknowledgement, which is the evidence that the episode is over.
+
+The probe is proportional rather than a fixed step for the matching reason: a
+2 ms step needed eighty acknowledgements to come back from 100 ms, longer than
+most uploads, so the controller spent its life crawling downhill instead of
+running at its settled rate.
 
 It starts at 40 ms, well clear of the floor, because the first upload should be
 safe rather than fast. State lives on the **connection**, not the upload, so a
