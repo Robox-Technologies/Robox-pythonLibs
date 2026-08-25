@@ -1,0 +1,21 @@
+{
+  // VS Code will prompt to install these when the workspace is opened.
+  "recommendations": [
+    // The Thonny replacement: serial REPL, upload/download, run-on-device,
+    // and bundled MicroPython stubs for the RP2040.
+    "paulober.pico-w-go",
+
+    // Python language support + Pylance, which consumes the stub paths
+    // configured in settings.json.
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+
+    // Nice-to-have: syntax highlighting and shellcheck for tools/pico.
+    "timonwong.shellcheck"
+  ],
+  "unwantedRecommendations": [
+    // Pymakr is the other MicroPython extension; running both means two
+    // clients fighting over the same serial port.
+    "pycom.pymakr"
+  ]
+}

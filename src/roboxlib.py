@@ -1,11 +1,12 @@
-# 
+#
 # _____  ____ _____  ____ __  __
 # | () )/ () \| () )/ () \\ \/ /
-# |_|\_\\____/|_()_)\____//_/\_\n# 
-# 
-# This is generated code from the block code editor.
-# All code is written by me!
-# 
+# |_|\_\\____/|_()_)\____//_/\_\
+#
+# Ro/Box library to interface with other components.
+# All code is written by Yuma Soerianto and Sebastien Taylor!
+# Copyright (c) 2023-2026 Yuma Soerianto and Sebastien Taylor
+#
 
 from machine import Pin, PWM, time_pulse_us, I2C
 from utime import sleep, sleep_us, ticks_diff, ticks_ms
@@ -49,35 +50,35 @@ class Motors:
         self.a1.freq(500)
         self.a2 = PWM(Pin(a2_pin, Pin.OUT))
         self.a2.freq(500)
-        
+
         self.b1 = PWM(Pin(b1_pin, Pin.OUT))
         self.b1.freq(500)
         self.b2 = PWM(Pin(b2_pin, Pin.OUT))
         self.b2.freq(500)
-    
+
     def run_motor(self, motor, speed):
         speed = min(100, max(-100, speed))
         pwm_duty = abs(int(speed/100*65025))
-        
+
         if motor == 1:
             self.a1.duty_u16(pwm_duty if speed > 0 else 0)
             self.a2.duty_u16(0 if speed > 0 else pwm_duty)
         if motor == 2:
             self.b1.duty_u16(pwm_duty if speed > 0 else 0)
             self.b2.duty_u16(0 if speed > 0 else pwm_duty)
-    
+
     def run_motors(self, left_speed, right_speed):
         self.run_motor(1, left_speed)
         self.run_motor(2, right_speed)
-    
+
     def stop_motors(self):
         self.run_motors(0, 0)
-    
+
     def run_motors_for_time(self, left_speed, right_speed, time):
         self.run_motors(left_speed, right_speed)
         sleep(time)
         self.stop_motors()
-    
+
     def _motor_power(self, orientation, direction, speed):
         speed = abs(speed)
         if speed == 0:
@@ -87,7 +88,7 @@ class Motors:
         left_motor_power = self._motor_power(-1, direction, speed)
         right_motor_power = self._motor_power(1, direction, speed)
         self.run_motors(left_motor_power, right_motor_power)
-    
+
     def steer_motors_for_time(self, direction, speed, time):
         self.steer_motors(direction, speed)
         sleep(time)
@@ -96,18 +97,18 @@ class Motors:
 class UltrasonicSensor:
     def __init__(self, trig_pin=4, echo_pin=5, echo_timeout=500*2*30):
         self.echo_timeout = echo_timeout
-        
+
         self.trig = Pin(trig_pin, Pin.OUT)
         self.trig.value(0)
-        
+
         self.echo = Pin(echo_pin, Pin.IN)
-        
+
         self.last_distance = None
         self.last_read_time = 0
         self.min_interval_ms = 50  # 20Hz max refresh
-        
+
         self.FALLBACK_ECHO = echo_timeout*1.2 # Some fallback beyond timeout range
-    
+
     def convert_us_to_cm(self, us_time):
         return us_time / (10_000 / 343)
     def distance(self):
@@ -127,23 +128,23 @@ class UltrasonicSensor:
         # Ensure trig is LOW
         self.trig.value(0)
         sleep_us(5)
-        
+
         # Trig: 10us pulse
         self.trig.value(1)
         sleep_us(10)
         self.trig.value(0)
-        
+
         echo_time = 0
-        
+
         try:
             echo_time = time_pulse_us(self.echo, 1, self.echo_timeout)
             if echo_time < 0:
                 echo_time = self.FALLBACK_ECHO
         except OSError as ex:
-            
+
             print("Error obtaining ultrasonic value.")
             echo_time = self.FALLBACK_ECHO
-        
+
         return self.convert_us_to_cm(echo_time/2) # Halve time to remove return trip time
 class Servo:
     def __init__(self, pin=20):
@@ -156,12 +157,12 @@ class Servo:
         pulse = self.angle_to_pulse(angle)
         self.servo.duty_u16(pulse)
         sleep(0.2)
-    
+
 class LineSensors:
     def __init__(self, left_pin=3, right_pin=2):
         self.sensor_left = Pin(left_pin, Pin.IN)
         self.sensor_right = Pin(right_pin, Pin.IN)
-    
+
     def read_line_position(self):
         return [self.sensor_left.value(), self.sensor_right.value()]
 
@@ -174,42 +175,42 @@ class ColorSensor:
         self.gain(60)
         self.active(True)
         self.loadCalibration()
-        
+
         sensor_id = self.sensor_id()
         if sensor_id not in (0x44, 0x10, 0x4d):
             raise RuntimeError("wrong sensor id 0x{:x}".format(sensor_id))
-    
+
     def loadCalibration(self):
         # Load calibration data
         config = { _CALIBRATION_KEY: _CALIBRATION_DEFAULT }
-        
+
         try:
             with open('config.json', 'r') as configFile:
                 config = json.load(configFile)
         except:
             with open('config.json', 'w') as configFile:
                 json.dump(config, configFile)
-        
+
         self.calibration = config[_CALIBRATION_KEY]
-    
+
     def calibrate(self):
         # Calibration steps:
         # 1. Place Ro/Box on white calibration surface
         # 2. Run this calibration method
         # 3. Calibration will automatically save. Enjoy!
         maxR = maxG = maxB = 0
-    
+
         for _ in range(10):
             r, g, b = self.readColor(raw=True)
-            
+
             maxR = max(r, maxR)
             maxG = max(g, maxG)
             maxB = max(b, maxB)
-            
+
         self.calibration = [maxR, maxG, maxB]
         with open('config.json', 'w') as configFile:
             json.dump({ _CALIBRATION_KEY: self.calibration }, configFile)
-    
+
     def resetCalibration(self):
         with open('config.json', 'w') as configFile:
             json.dump({ _CALIBRATION_KEY: _CALIBRATION_DEFAULT }, configFile)
@@ -261,7 +262,7 @@ class ColorSensor:
             _REGISTER_CDATA,
         ))
         self.active(was_active)
-        
+
         rgb = self._parse_rgb(data)
         if raw:
             return rgb
@@ -289,17 +290,17 @@ class ColorSensor:
 
     def _parse_rgb(self, data):
         r, g, b, c = data
-        
+
         # No light: return black (prevent div 0 error)
         if c == 0:
             return 0, 0, 0
-        
+
         red = pow((int((r/c) * 256) / 255), 2.5) * c
         green = pow((int((g/c) * 256) / 255), 2.5) * c
         blue = pow((int((b/c) * 256) / 255), 2.5) * c
-        
+
         return red, green, blue
-    
+
     def _calibrated_rgb(self, rgb):
         r, g, b = rgb
         calibratedR = r/self.calibration[0]
@@ -311,13 +312,13 @@ class ColorSensor:
         calibratedG = calibratedG * clrFac
         calibratedB = calibratedB * clrFac
         return self._boost_contrast([calibratedR, calibratedG, calibratedB])
-    
+
     def _boost_contrast(self, rgb, factor=2):
         h, s, v = rgb_to_hsv(*rgb)
         s = min(s*factor, 1)
-        
+
         return hsv_to_rgb(h, s, v)
-    
+
 def rgb_to_hsv(r, g, b):
     r, g, b = r / 255.0, g / 255.0, b / 255.0  # Normalize to [0,1]
     max_c = max(r, g, b)

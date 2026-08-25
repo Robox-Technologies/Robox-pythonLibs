@@ -1,0 +1,260 @@
+{
+  "version": "2.0.0",
+
+  // Every task shells out to ./tools/pico so the exact same commands work from
+  // a terminal. Run them with Cmd+Shift+P -> "Tasks: Run Task", or bind
+  // "workbench.action.tasks.runTask" to a key (see docs/VSCODE.md).
+  //
+  // NOTE: only one program may hold the serial port at a time. If a task
+  // reports "no device found", close the MicroPico vREPL terminal first.
+
+  "options": {
+    "cwd": "${workspaceFolder}"
+  },
+
+  "presentation": {
+    "echo": true,
+    "reveal": "always",
+    "focus": false,
+    "panel": "dedicated",
+    "showReuseMessage": false,
+    "clear": true
+  },
+
+  "tasks": [
+    // ===================================================================
+    // Setup / diagnostics
+    // ===================================================================
+    {
+      "label": "Pico: Doctor (check toolchain)",
+      "detail": "Verify mpremote, picotool and the MicroPico extension are installed, then list serial ports.",
+      "type": "shell",
+      "command": "./tools/pico doctor",
+      "problemMatcher": [],
+      "group": "none"
+    },
+    {
+      "label": "Pico: List serial ports",
+      "detail": "Show every serial device mpremote can see. Use this to find your port.",
+      "type": "shell",
+      "command": "./tools/pico devs",
+      "problemMatcher": []
+    },
+    {
+      "label": "Pico: Install dev dependencies",
+      "detail": "pip install mpremote and the MicroPython stubs into your active Python environment.",
+      "type": "shell",
+      "command": "python3 -m pip install --user -r requirements-dev.txt",
+      "problemMatcher": []
+    },
+
+    // ===================================================================
+    // Day-to-day: the Thonny equivalents
+    // ===================================================================
+    {
+      "label": "Pico: REPL",
+      "detail": "Attach to the MicroPython prompt without soft-resetting. Ctrl-C stops the running program, Ctrl-] detaches.",
+      "type": "shell",
+      "command": "./tools/pico repl",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "focus": true,
+        "panel": "dedicated",
+        "clear": false
+      }
+    },
+    {
+      "label": "Pico: Upload src/ to board",
+      "detail": "Thonny's 'upload every file' step: copies src/ onto the Pico root, creating lib/ as needed.",
+      "type": "shell",
+      "command": "./tools/pico sync",
+      "problemMatcher": [],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "Pico: Upload current file",
+      "detail": "Copy just the file in the active editor to the Pico root.",
+      "type": "shell",
+      "command": "./tools/pico push '${file}' '${fileBasename}'",
+      "problemMatcher": []
+    },
+    {
+      "label": "Pico: Run current file (not saved to flash)",
+      "detail": "Execute the active editor's file on the board from RAM. Fastest way to try something.",
+      "type": "shell",
+      "command": "./tools/pico run '${file}'",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "focus": true,
+        "panel": "dedicated",
+        "clear": true
+      }
+    },
+    {
+      "label": "Pico: Mount src/ as board filesystem",
+      "detail": "Dev loop with zero flash writes: the Pico imports straight from src/ over USB. Ctrl-] to detach.",
+      "type": "shell",
+      "command": "./tools/pico mount",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "focus": true,
+        "panel": "dedicated",
+        "clear": false
+      }
+    },
+    {
+      "label": "Pico: Upload src/ then open REPL",
+      "detail": "Sync, hard reset, and attach so you can watch main.py boot. The closest thing to Thonny's green Run button.",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "Pico: Upload src/ to board",
+        "Pico: Reset board",
+        "Pico: Settle after reset",
+        "Pico: REPL"
+      ],
+      "problemMatcher": []
+    },
+
+    // ===================================================================
+    // Inspecting the board
+    // ===================================================================
+    {
+      "label": "Pico: List files on board",
+      "detail": "Recursive listing of the Pico filesystem.",
+      "type": "shell",
+      "command": "./tools/pico tree",
+      "problemMatcher": []
+    },
+    {
+      "label": "Pico: Print a file from board",
+      "detail": "cat a file that lives on the Pico (e.g. program.py, calibration.json).",
+      "type": "shell",
+      "command": "./tools/pico cat '${input:remotePath}'",
+      "problemMatcher": []
+    },
+    {
+      "label": "Pico: Download a file from board",
+      "detail": "Pull a file off the Pico into the repo root.",
+      "type": "shell",
+      "command": "./tools/pico pull '${input:remotePath}'",
+      "problemMatcher": []
+    },
+
+    // ===================================================================
+    // Board control
+    // ===================================================================
+    {
+      "label": "Pico: Stop running program",
+      "detail": "Send Ctrl-C to break out of main.py's loop and leave the board at the prompt.",
+      "type": "shell",
+      "command": "./tools/pico stop",
+      "problemMatcher": []
+    },
+    {
+      "label": "Pico: Reset board",
+      "detail": "Hard reset. main.py runs again from the top.",
+      "type": "shell",
+      "command": "./tools/pico reset",
+      "problemMatcher": []
+    },
+    {
+      "label": "Pico: Soft reset board",
+      "detail": "Restart the interpreter without power-cycling (Thonny's 'Send EOF / Soft reboot'). main.py reruns.",
+      "type": "shell",
+      "command": "./tools/pico soft-reset",
+      "problemMatcher": []
+    },
+    {
+      "label": "Pico: Settle after reset",
+      "detail": "Internal step: gives the board a moment to finish rebooting before another task grabs the port.",
+      "type": "shell",
+      "command": "sleep 2",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "silent",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "Pico: Wipe board filesystem",
+      "detail": "Delete every user file on the Pico. Prompts for confirmation.",
+      "type": "shell",
+      "command": "./tools/pico wipe",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "focus": true,
+        "panel": "dedicated"
+      }
+    },
+
+    // ===================================================================
+    // UF2 release workflow (see README.md)
+    // ===================================================================
+    {
+      "label": "UF2: Reboot board into BOOTSEL",
+      "detail": "Put the Pico into mass-storage mode so picotool can read its flash. The RPI-RP2 volume appears.",
+      "type": "shell",
+      "command": "./tools/pico bootsel",
+      "problemMatcher": []
+    },
+    {
+      "label": "UF2: Save board flash to build/",
+      "detail": "picotool save -t uf2. The board must already be in BOOTSEL mode.",
+      "type": "shell",
+      "command": "./tools/pico uf2",
+      "problemMatcher": []
+    },
+    {
+      "label": "UF2: Build release (sync -> BOOTSEL -> save)",
+      "detail": "The full README workflow in one command: upload src/, reboot to BOOTSEL, dump flash to build/*.uf2.",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "Pico: Upload src/ to board",
+        "UF2: Reboot board into BOOTSEL",
+        "UF2: Wait for BOOTSEL volume",
+        "UF2: Save board flash to build/"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "UF2: Wait for BOOTSEL volume",
+      "detail": "Internal step: gives the RPI-RP2 volume a few seconds to mount before picotool runs.",
+      "type": "shell",
+      "command": "echo 'Waiting for the board to reappear in BOOTSEL mode...' && sleep 4",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "silent",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "UF2: Flash a .uf2 onto the board",
+      "detail": "Load an existing UF2 onto a Pico that is in BOOTSEL mode.",
+      "type": "shell",
+      "command": "./tools/pico flash '${input:uf2Path}'",
+      "problemMatcher": []
+    }
+  ],
+
+  "inputs": [
+    {
+      "id": "remotePath",
+      "type": "promptString",
+      "description": "Path on the Pico (e.g. program.py or lib/picozero/picozero.py)",
+      "default": "program.py"
+    },
+    {
+      "id": "uf2Path",
+      "type": "promptString",
+      "description": "Path to the .uf2 file to flash",
+      "default": "build/"
+    }
+  ]
+}

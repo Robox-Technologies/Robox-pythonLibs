@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# MicroPico downloads its bundled MicroPython stubs here on
+# "MicroPico > Configure project". Regenerable and large, so not committed.
+.vscode/Pico-W-Stub/
+
+# UF2 artifacts produced by `./tools/pico uf2` / the "UF2: Build release" task.
+build/*
+!build/.gitkeep
+
+# The user program that main.py writes to flash at runtime; not source.
+/program.py

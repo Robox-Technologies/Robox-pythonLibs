@@ -1,0 +1,465 @@
+#!/usr/bin/env bash
+#
+# tools/pico -- Thonny-replacement CLI for the Robox Pico firmware.
+#
+# Thin, opinionated wrapper around `mpremote` (and `picotool` for UF2 work).
+# Everything the VS Code tasks do routes through this script, so the same
+# commands work from a plain terminal.
+#
+#   ./tools/pico devs                 list serial ports
+#   ./tools/pico repl                 open the MicroPython REPL (Ctrl-] to exit)
+#   ./tools/pico ls [path]            list files on the Pico
+#   ./tools/pico cat <remote>         print a file from the Pico
+#   ./tools/pico sync                 upload src/ -> Pico root (mirrors Thonny)
+#   ./tools/pico push <file> [dest]   upload a single file
+#   ./tools/pico pull <remote> [dest] download a file from the Pico
+#   ./tools/pico run <file>           run a local file on the Pico without saving
+#   ./tools/pico mount                expose src/ as the Pico's filesystem (no flashing)
+#   ./tools/pico wipe                 delete every user file on the Pico
+#   ./tools/pico reset                hard reset the Pico
+#   ./tools/pico stop                 interrupt the running program (Ctrl-C)
+#   ./tools/pico bootsel              reboot into BOOTSEL / mass-storage mode
+#   ./tools/pico uf2 [out.uf2]        dump the Pico's flash to a UF2 (needs BOOTSEL)
+#   ./tools/pico flash <file.uf2>     load a UF2 onto a Pico in BOOTSEL mode
+#   ./tools/pico doctor               check that the toolchain is installed
+#
+# Env overrides:
+#   PICO_PORT   serial port to use (default: auto)
+#   SYNC_DIR    local dir to upload (default: src)
+#
+set -euo pipefail
+
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+SYNC_DIR="${SYNC_DIR:-src}"
+PICO_PORT="${PICO_PORT:-auto}"
+
+# Paths under SYNC_DIR that must never reach the Pico. Matched against the
+# whole relative path and against any single path component.
+# The dist-info directory is pip packaging metadata -- useless on the board and
+# it wastes flash.
+EXCLUDES=(
+  ".DS_Store"
+  "__pycache__"
+  ".gitkeep"
+  "lib/picozero-0.4.2.dist-info"
+)
+
+# ---------------------------------------------------------------------------
+# output helpers
+# ---------------------------------------------------------------------------
+if [[ -t 1 ]]; then
+  C_DIM=$'\033[2m'; C_RED=$'\033[31m'; C_GRN=$'\033[32m'
+  C_YEL=$'\033[33m'; C_BLU=$'\033[34m'; C_OFF=$'\033[0m'
+else
+  C_DIM=""; C_RED=""; C_GRN=""; C_YEL=""; C_BLU=""; C_OFF=""
+fi
+
+info()  { printf '%s==>%s %s\n' "$C_BLU" "$C_OFF" "$*"; }
+ok()    { printf '%s  ok%s %s\n' "$C_GRN" "$C_OFF" "$*"; }
+warn()  { printf '%swarn%s %s\n' "$C_YEL" "$C_OFF" "$*" >&2; }
+die()   { printf '%serror%s %s\n' "$C_RED" "$C_OFF" "$*" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# toolchain discovery
+# ---------------------------------------------------------------------------
+
+# Locate mpremote, whether it is on PATH or only importable as a python module.
+# Sets the global MPR array. Returns non-zero (without exiting) when absent, so
+# `doctor` can report the situation instead of dying on it.
+find_mpremote() {
+  MPR=()
+  if command -v mpremote >/dev/null 2>&1; then
+    MPR=(mpremote)
+    return 0
+  fi
+  local py
+  for py in python3 python; do
+    if command -v "$py" >/dev/null 2>&1 && "$py" -c 'import mpremote' >/dev/null 2>&1; then
+      MPR=("$py" -m mpremote)
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Same, but fatal -- used by every command that actually talks to the board.
+require_mpremote() {
+  find_mpremote || die \
+    "mpremote not found. Install it with:  python3 -m pip install --user -r requirements-dev.txt"
+}
+
+# Run mpremote against the configured port.
+# Deliberately avoids bash-4-only builtins so this works with the bash 3.2 that
+# ships with macOS.
+mp() {
+  local rc=0
+  # DRY_RUN=1 prints what would be sent to the board and touches no hardware.
+  # Handy for checking which files `sync` would upload.
+  if [[ "${DRY_RUN:-0}" == "1" ]]; then
+    printf '%s   dry%s mpremote %s\n' "$C_DIM" "$C_OFF" "$*" >&2
+    return 0
+  fi
+  if [[ "$PICO_PORT" == "auto" || -z "$PICO_PORT" ]]; then
+    "${MPR[@]}" connect auto "$@" || rc=$?
+  else
+    "${MPR[@]}" connect "$PICO_PORT" "$@" || rc=$?
+  fi
+  if [[ $rc -ne 0 ]]; then
+    hint_connection_failure
+  fi
+  return $rc
+}
+
+# The two failure modes that account for almost every problem here.
+hint_connection_failure() {
+  printf '\n%shint%s The Pico did not respond. Usual causes:\n' "$C_YEL" "$C_OFF" >&2
+  printf '  1. Something else owns the serial port. Close Thonny, and close the\n' >&2
+  printf '     MicroPico vREPL terminal in VS Code (only one client at a time).\n' >&2
+  printf '  2. No board detected. Check with:  ./tools/pico devs\n' >&2
+  printf '  3. Board is in BOOTSEL mode (shows up as the RPI-RP2 volume, not a\n' >&2
+  printf '     serial port). Replug it without holding BOOTSEL.\n' >&2
+}
+
+require_picotool() {
+  command -v picotool >/dev/null 2>&1 || die \
+    "picotool not found. Install it with:  brew install picotool   (or build from https://github.com/raspberrypi/picotool)"
+}
+
+# ---------------------------------------------------------------------------
+# commands
+# ---------------------------------------------------------------------------
+
+cmd_devs() {
+  info "Serial ports visible to mpremote:"
+  "${MPR[@]}" devs
+}
+
+cmd_repl() {
+  info "Opening REPL${C_DIM} (Ctrl-] to quit, Ctrl-C to stop the running program)${C_OFF}"
+  # `resume` avoids the implicit soft-reset so you attach to the live program,
+  # exactly like Thonny's "Stop/Restart" vs. plain connect.
+  mp resume repl
+}
+
+cmd_stop() {
+  info "Sending Ctrl-C to interrupt the running program"
+  # Entering the raw REPL sends Ctrl-C, which raises KeyboardInterrupt inside
+  # main.py's loop and leaves the board sitting at the prompt. Gentler than a
+  # reset, which would just restart main.py.
+  if mp resume exec 'pass'; then
+    ok "interrupt sent -- board is at the REPL prompt"
+  else
+    die "could not reach the board"
+  fi
+}
+
+cmd_ls() {
+  local path="${1:-/}"
+  mp fs ls "$path"
+}
+
+cmd_cat() {
+  [[ $# -ge 1 ]] || die "usage: pico cat <remote-path>"
+  mp fs cat "$1"
+}
+
+cmd_tree() {
+  mp fs tree "${1:-/}"
+}
+
+# Upload SYNC_DIR to the Pico root, creating directories as needed.
+cmd_sync() {
+  local src="$REPO_ROOT/$SYNC_DIR"
+  [[ -d "$src" ]] || die "sync dir not found: $src"
+
+  info "Syncing ${C_DIM}$SYNC_DIR/${C_OFF} -> Pico root"
+
+  # 1. Create the directory skeleton in one shot. `fs mkdir` errors on an
+  #    existing directory, which would abort a chained invocation, so do it with
+  #    an idempotent exec instead.
+  local dirs="" d
+  while IFS= read -r d; do
+    [[ -z "$d" ]] && continue
+    if is_excluded "$d"; then continue; fi
+    printf '  mkdir :%s\n' "$d"
+    dirs="${dirs}\"${d}\","
+  done < <(cd "$src" && find . -mindepth 1 -type d | sed 's|^\./||' | sort)
+
+  if [[ -n "$dirs" ]]; then
+    mp exec "
+import os
+for d in [$dirs]:
+    try:
+        os.mkdir(d)
+    except OSError:
+        pass
+" || die "could not create directories on the board"
+  fi
+
+  # 2. Build ONE chained mpremote invocation ('cmd + cmd + cmd'). One process
+  #    means one connection and one raw-REPL entry, instead of paying that cost
+  #    per file.
+  #
+  #    main.py is copied last: if the sync is interrupted part-way, the board is
+  #    left without a main.py rather than with one that imports a module that
+  #    never made it across.
+  local args=() f copied=0
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    if is_excluded "$f"; then
+      printf '%s  skip  %s%s\n' "$C_DIM" "$f" "$C_OFF"
+      continue
+    fi
+    printf '  copy  %s\n' "$f"
+    if [[ $copied -gt 0 ]]; then
+      args+=("+")
+    fi
+    args+=(fs cp "$src/$f" ":$f")
+    copied=$((copied + 1))
+  done < <(cd "$src" && find . -type f | sed 's|^\./||' | sort |
+    awk '{ print ($0 == "main.py" ? 1 : 0) "\t" $0 }' | sort -s -k1,1n | cut -f2-)
+
+  [[ $copied -gt 0 ]] || die "nothing to upload from $SYNC_DIR/ (everything excluded?)"
+
+  mp "${args[@]}"
+
+  ok "$copied file(s) uploaded"
+  warn "Run './tools/pico reset' (or the 'Pico: Reset board' task) to restart main.py."
+}
+
+is_excluded() {
+  local candidate="$1" pattern
+  for pattern in "${EXCLUDES[@]}"; do
+    case "$candidate" in
+      "$pattern" | */"$pattern" | "$pattern"/* | */"$pattern"/*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+cmd_push() {
+  [[ $# -ge 1 ]] || die "usage: pico push <local-file> [remote-path]"
+  local local_file="$1"
+  [[ -f "$local_file" ]] || die "no such file: $local_file"
+  local remote="${2:-$(basename "$local_file")}"
+  info "Uploading $local_file -> :$remote"
+  mp fs cp "$local_file" ":$remote"
+  ok "done"
+}
+
+cmd_pull() {
+  [[ $# -ge 1 ]] || die "usage: pico pull <remote-path> [local-path]"
+  local remote="$1"
+  local dest="${2:-$(basename "$remote")}"
+  info "Downloading :$remote -> $dest"
+  mp fs cp ":$remote" "$dest"
+  ok "done"
+}
+
+cmd_run() {
+  [[ $# -ge 1 ]] || die "usage: pico run <local-file.py>"
+  [[ -f "$1" ]] || die "no such file: $1"
+  info "Running $1 on the Pico ${C_DIM}(not saved to flash; Ctrl-C to stop)${C_OFF}"
+  mp run "$1"
+}
+
+# Serve SYNC_DIR over the serial link as the Pico's filesystem. Nothing is
+# written to flash, so this is the fastest edit/test loop.
+cmd_mount() {
+  info "Mounting ${C_DIM}$SYNC_DIR/${C_OFF} as the Pico filesystem ${C_DIM}(Ctrl-] to detach)${C_OFF}"
+  mp mount "$REPO_ROOT/$SYNC_DIR" repl
+}
+
+cmd_wipe() {
+  warn "This deletes every user file on the Pico."
+  read -r -p "Type 'wipe' to confirm: " reply
+  [[ "$reply" == "wipe" ]] || die "aborted"
+  info "Removing user files"
+  # Always walk from "/" -- os.listdir("") is undefined across MicroPython VFS
+  # implementations (littlefs and FatFs disagree), so don't rely on it.
+  mp exec '
+import os
+
+def clear(path):
+    for entry in os.listdir(path):
+        full = path.rstrip("/") + "/" + entry
+        try:
+            is_dir = os.stat(full)[0] & 0x4000
+        except OSError:
+            continue
+        if is_dir:
+            clear(full)
+            try:
+                os.rmdir(full)
+            except OSError:
+                pass
+        else:
+            try:
+                os.remove(full)
+            except OSError:
+                pass
+
+clear("/")
+print("filesystem cleared, remaining:", os.listdir("/"))
+'
+  ok "wiped"
+}
+
+# machine.reset() -- full hardware reset, boot.py and main.py rerun.
+cmd_reset() {
+  info "Hard resetting the Pico"
+  mp reset
+  ok "reset sent"
+}
+
+# Ctrl-D at the REPL -- reinitialises the interpreter without power-cycling.
+# This is the true equivalent of Thonny's "Send EOF / Soft reboot".
+cmd_soft_reset() {
+  info "Soft resetting the Pico (interpreter restart, main.py reruns)"
+  mp soft-reset
+  ok "soft reset sent"
+}
+
+cmd_bootsel() {
+  info "Rebooting the Pico into BOOTSEL (mass storage) mode"
+  mp bootloader || warn "If that failed, unplug the Pico and replug it holding BOOTSEL."
+  ok "The RPI-RP2 volume should appear shortly."
+}
+
+# Dump the Pico's entire flash to a UF2 -- the release artifact described in
+# README.md. Requires the board to already be in BOOTSEL mode.
+cmd_uf2() {
+  require_picotool
+  local out="${1:-$REPO_ROOT/build/robox-$(date +%Y%m%d-%H%M%S).uf2}"
+  mkdir -p "$(dirname "$out")"
+  info "Saving Pico flash -> $out"
+  picotool save -a "$out" -t uf2
+  ok "wrote $out"
+  ls -lh "$out"
+}
+
+cmd_flash() {
+  require_picotool
+  [[ $# -ge 1 ]] || die "usage: pico flash <file.uf2>"
+  [[ -f "$1" ]] || die "no such file: $1"
+  info "Loading $1 onto the Pico"
+  picotool load "$1"
+  picotool reboot || true
+  ok "flashed"
+}
+
+# Deliberately never fatal: this is the command you run *because* something is
+# missing, so it has to survive a missing toolchain and report it.
+cmd_doctor() {
+  local rc=0 have_mpremote=0
+  printf 'Robox Pico toolchain check\n\n'
+
+  if find_mpremote; then
+    have_mpremote=1
+    ok "mpremote        $("${MPR[@]}" version 2>&1 | head -1)"
+  else
+    warn "mpremote        MISSING -> python3 -m pip install --user -r requirements-dev.txt"
+    rc=1
+  fi
+
+  if command -v picotool >/dev/null 2>&1; then
+    ok "picotool        $(picotool version 2>&1 | head -1)"
+  else
+    warn "picotool        MISSING (only needed for UF2 builds) -> brew install picotool"
+  fi
+
+  if command -v code >/dev/null 2>&1; then
+    if code --list-extensions 2>/dev/null | grep -qi 'paulober.pico-w-go'; then
+      ok "MicroPico       installed"
+    else
+      warn "MicroPico       not installed -> code --install-extension paulober.pico-w-go"
+    fi
+  else
+    warn "code CLI        not on PATH (VS Code: 'Shell Command: Install code command in PATH')"
+  fi
+
+  if [[ -d "$REPO_ROOT/.vscode/Pico-W-Stub" ]]; then
+    ok "stubs           .vscode/Pico-W-Stub present"
+  else
+    warn "stubs           missing -> run 'MicroPico > Configure project' in VS Code"
+  fi
+
+  if [[ $have_mpremote -eq 1 ]]; then
+    printf '\n'
+    info "Serial ports:"
+    "${MPR[@]}" devs || true
+  fi
+
+  return $rc
+}
+
+usage() {
+  cat <<'EOF'
+tools/pico -- Thonny-replacement CLI for the Robox Pico firmware.
+
+  pico doctor                 check that mpremote / picotool / MicroPico exist
+  pico devs                   list serial ports
+  pico repl                   open the MicroPython REPL (Ctrl-] quits)
+  pico stop                   interrupt the running program (Ctrl-C)
+
+  pico ls [path]              list files on the Pico
+  pico tree [path]            recursive listing
+  pico cat <remote>           print a file from the Pico
+  pico sync                   upload src/ -> Pico root (the Thonny workflow)
+  pico push <file> [dest]     upload one file
+  pico pull <remote> [dest]   download one file
+  pico run <file>             run a local file on the Pico without saving it
+  pico mount                  serve src/ as the Pico filesystem (no flash writes)
+  pico wipe                   delete every user file on the Pico
+  pico soft-reset             restart the interpreter (Thonny's "Send EOF")
+  pico reset                  hard reset (machine.reset())
+
+  pico bootsel                reboot into BOOTSEL / mass-storage mode
+  pico uf2 [out.uf2]          dump Pico flash to a UF2 (needs BOOTSEL + picotool)
+  pico flash <file.uf2>       load a UF2 onto a Pico in BOOTSEL mode
+
+Environment:
+  PICO_PORT=/dev/cu.usbmodem1101   pin to a specific port (default: auto)
+  SYNC_DIR=src                     directory uploaded by `pico sync`
+  DRY_RUN=1                        print commands instead of touching hardware
+EOF
+}
+
+# ---------------------------------------------------------------------------
+main() {
+  local sub="${1:-help}"
+  shift || true
+
+  # These three need neither mpremote nor a board, so they must not be gated on
+  # the toolchain check -- `doctor` in particular is what you run when the
+  # toolchain is broken.
+  case "$sub" in
+    help | -h | --help) usage; return 0 ;;
+    doctor)             cmd_doctor "$@"; return $? ;;
+    uf2 | save)         cmd_uf2 "$@"; return $? ;;
+    flash | load)       cmd_flash "$@"; return $? ;;
+  esac
+
+  require_mpremote
+
+  case "$sub" in
+    devs | ports)  cmd_devs "$@" ;;
+    repl | shell)  cmd_repl "$@" ;;
+    stop)          cmd_stop "$@" ;;
+    ls)            cmd_ls "$@" ;;
+    tree)          cmd_tree "$@" ;;
+    cat)           cmd_cat "$@" ;;
+    sync | upload) cmd_sync "$@" ;;
+    push)          cmd_push "$@" ;;
+    pull | download) cmd_pull "$@" ;;
+    run)           cmd_run "$@" ;;
+    mount)         cmd_mount "$@" ;;
+    wipe)          cmd_wipe "$@" ;;
+    reset | reboot) cmd_reset "$@" ;;
+    soft-reset | softreset) cmd_soft_reset "$@" ;;
+    bootsel | bootloader) cmd_bootsel "$@" ;;
+    *)             die "unknown command '$sub' (try: pico help)" ;;
+  esac
+}
+
+main "$@"

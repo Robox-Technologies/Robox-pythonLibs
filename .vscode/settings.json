@@ -1,0 +1,113 @@
+{
+  // ---------------------------------------------------------------------
+  // MicroPico (paulober.pico-w-go) -- the Thonny replacement
+  //
+  // NB: running "MicroPico > Configure project" rewrites the
+  // python.analysis.* keys below and will strip these comments. The values
+  // it writes are the same ones already set here, so you only need to run
+  // it once to fetch the stubs.
+  // ---------------------------------------------------------------------
+
+  // "Upload project" pushes the contents of src/ to the Pico's root, so
+  // src/main.py -> /main.py and src/lib/picozero -> /lib/picozero.
+  // This is what the firmware expects to find at boot.
+  "micropico.syncFolder": "src",
+
+  // Only upload file types the Pico can use. syncAllFileTypes must stay false
+  // for this list to apply at all.
+  "micropico.syncAllFileTypes": false,
+  "micropico.syncFileTypes": ["py", "txt", "json", "mpy"],
+
+  // Paths here are resolved RELATIVE TO syncFolder (i.e. relative to src/),
+  // not to the repo root -- so listing things like "docs" or "tools" would be
+  // inert. "**/" is the only wildcard form supported.
+  "micropico.pyIgnore": [
+    "**/.DS_Store",
+    "**/__pycache__",
+    // pip packaging metadata: useless on the board, wastes flash.
+    "lib/picozero-0.4.2.dist-info"
+  ],
+
+  // Set to false on purpose: openOnStart grabs the serial port the moment the
+  // window opens, which then blocks ./tools/pico and any task that talks to
+  // the board. Open the vREPL explicitly when you want it
+  // (MicroPico > Connect), or flip this to true if you work only in the vREPL.
+  "micropico.openOnStart": false,
+  "micropico.autoConnect": true,
+
+  // Leave empty to auto-detect. If auto-detect picks the wrong device, set
+  // autoConnect to false and name the port here:
+  //   macOS:   "/dev/cu.usbmodem1101"
+  //   Linux:   "/dev/ttyACM0"
+  //   Windows: "COM3"
+  "micropico.manualComDevice": "",
+
+  // Soft-reset after an upload so the board reruns main.py against the files
+  // you just pushed.
+  "micropico.softResetAfterUpload": true,
+
+  // ---------------------------------------------------------------------
+  // Python analysis -- teach Pylance about MicroPython
+  // ---------------------------------------------------------------------
+
+  // `machine`, `_thread`, `ustruct`, `utime` etc. only exist on the board.
+  // "MicroPico > Configure project" creates .vscode/Pico-W-Stub as a link to
+  // the installed micropython-rp2 stubs package. Point at that directory
+  // itself -- there is no typings/ or stubs/ subfolder in the current layout.
+  // Note typeshedPaths only honours its FIRST entry.
+  "python.languageServer": "Pylance",
+  "python.analysis.typeshedPaths": [".vscode/Pico-W-Stub"],
+  "python.analysis.extraPaths": [".vscode/Pico-W-Stub", "src", "src/lib"],
+  "python.analysis.typeCheckingMode": "basic",
+  "python.analysis.diagnosticSeverityOverrides": {
+    // Stub-only modules have no local runtime source; that is expected.
+    "reportMissingModuleSource": "none",
+    // MicroPython stubs are loose about Optional returns (e.g. I2C reads).
+    "reportOptionalMemberAccess": "none",
+    "reportOptionalSubscript": "none",
+    // picozero and the firmware both use non-standard self/cls names.
+    "reportSelfClsParameterName": "none",
+    // main.py builds its sandbox namespace dynamically for exec().
+    "reportUnusedExpression": "none"
+  },
+
+  // MicroPython 1.x tracks a CPython 3.4-3.11 syntax subset. Don't suggest
+  // 3.12+ constructs that won't run on hardware.
+  "python.analysis.pythonVersion": "3.11",
+
+  // ---------------------------------------------------------------------
+  // Editor conventions for firmware files
+  // ---------------------------------------------------------------------
+  "files.eol": "\n",
+  "files.insertFinalNewline": true,
+
+  // Deliberately OFF. The existing firmware files carry a lot of trailing
+  // whitespace, so trimming on save rewrites whole files and buries real
+  // changes in whitespace noise. Turn it on once the tree has been cleaned up
+  // in a single dedicated commit.
+  "files.trimTrailingWhitespace": true,
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.DS_Store": true
+  },
+  "[python]": {
+    "editor.tabSize": 4,
+    "editor.insertSpaces": true,
+    "editor.rulers": [88]
+  },
+  "[shellscript]": {
+    "editor.tabSize": 2
+  },
+
+  // Keep the generated stub folder out of search results and file watching.
+  "search.exclude": {
+    ".vscode/Pico-W-Stub": true,
+    "build": true
+  },
+  "files.watcherExclude": {
+    "**/.vscode/Pico-W-Stub/**": true
+  },
+
+  // The tasks below all assume a terminal rooted at the repo.
+  "terminal.integrated.cwd": "${workspaceFolder}"
+}

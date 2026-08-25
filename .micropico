@@ -1,0 +1,6 @@
+Marker file. Its presence activates the MicroPico VS Code extension for this
+workspace and tells it this directory is the project root.
+
+Do not delete it -- without it the Pico status-bar buttons never appear.
+Created by "MicroPico > Configure project"; committed here so the setup is
+reproducible for anyone who clones the repo.
