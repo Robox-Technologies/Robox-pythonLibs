@@ -123,11 +123,11 @@ def dispatch_command(comm, command):
     # Firmware check
     # ----------------------
     if command == "firmware_check":
-        # Handed over rather than refused, and nothing is slept. The board never
-        # learns that a Bluetooth central went away, so a claim only ever clears
-        # explicitly: refusing the next client stranded the board until a power
-        # cycle, and a slept interface could only be woken over the other one.
-        # A firmware check is a fresh client announcing itself.
+        # Handed over rather than refused, and nothing is slept. The board
+        # never learns that a Bluetooth central went away, so a claim only
+        # clears explicitly: refusing the next client stranded the board until
+        # a power cycle, and a slept interface could only be woken over the
+        # other one. A firmware check is a fresh client announcing itself.
         current_communication_method = comm
         comm.write_message(
             "firmware",

@@ -274,6 +274,49 @@ class TestInterfaceClaim(unittest.TestCase):
         self.assertIsNone(ns["current_communication_method"])
 
 
+class TestProvisioning(unittest.TestCase):
+    def test_configure_reports_what_the_module_refused(self):
+        ns = load_firmware()
+        ble, comms = ns["ble"], ns["communication"]
+        comms.time.sleep = lambda _seconds: None
+
+        # This module answers ERROR to plenty of commands, and a refusal is
+        # otherwise indistinguishable from a setting that took.
+        refuse = {"AT+CHAR0xffe1"}
+
+        def answer(data):
+            ble.uart.written.append(data)
+            cmd = data.decode().strip()
+            ble.uart.feed(b"ERROR\r\n" if cmd in refuse else b"OK\r\n")
+
+        ble.uart.write = answer
+
+        self.assertFalse(ble.configure("Robox20"))
+        self.assertEqual(
+            [w.decode().strip() for w in ble.uart.written],
+            [
+                "AT+UUID0xffe0",
+                "AT+CHAR0xffe1",
+                "AT+NAMERobox20",
+                "AT+RESET",
+                "AT",
+            ],
+        )
+
+    def test_configure_passes_when_the_module_takes_everything(self):
+        ns = load_firmware()
+        ble, comms = ns["ble"], ns["communication"]
+        comms.time.sleep = lambda _seconds: None
+
+        def answer(data):
+            ble.uart.written.append(data)
+            ble.uart.feed(b"OK\r\n")
+
+        ble.uart.write = answer
+
+        self.assertTrue(ble.configure("Robox20"))
+
+
 class TestCommandGating(unittest.TestCase):
     def test_unverified_upload_will_not_run(self):
         ns = load_firmware()

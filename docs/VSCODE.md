@@ -9,7 +9,7 @@ Two layers are set up, deliberately overlapping:
 | Layer | What it gives you | When you want it |
 | --- | --- | --- |
 | **MicroPico extension** | Status-bar buttons, a live vREPL terminal, right-click Upload/Download on files, remote filesystem browsing | Interactive work. This is the direct Thonny analogue. |
-| **`tools/pico` + VS Code tasks** | Scriptable `mpremote`/`picotool` commands, identical from the terminal or CI | Repeatable steps, the UF2 release build, anything you want in version control |
+| **`tools/pico` + VS Code tasks** | Scriptable `mpremote`/`picotool` commands, identical from the terminal or CI | Repeatable steps, the UF2 release build (which needs no board at all), anything you want in version control |
 
 ---
 
@@ -18,8 +18,8 @@ Two layers are set up, deliberately overlapping:
 ### 1. Install the host tooling
 
 ```bash
-python3 -m pip install --user -r requirements-dev.txt   # mpremote (+ optional stubs)
-brew install picotool                                    # only needed for UF2 builds
+python3 -m pip install --user -r requirements-dev.txt   # mpremote + littlefs-python
+brew install picotool                                    # only for dumping/flashing a board
 ```
 
 On Linux, add yourself to the serial group and log out/in:
@@ -75,9 +75,9 @@ after a fresh clone.
 ./tools/pico doctor
 ```
 
-You should see `ok` for mpremote, the stubs and pyrightconfig — and, if you plan
-to build UF2s, picotool. Plug in the Pico and run `./tools/pico devs`; it should
-list one port.
+You should see `ok` for mpremote, littlefs-python, the stubs and pyrightconfig —
+and, if you plan to dump or flash a board, picotool. Plug in the Pico and run
+`./tools/pico devs`; it should list one port.
 
 Confirm type checking is healthy too:
 
@@ -205,9 +205,42 @@ stops it.
 
 ### Building a release UF2
 
-The README workflow (`picotool save -a … -t uf2`) is wired up as a single task:
+No board required. The artifact is a stock MicroPython build plus a littlefs
+image of `src/`, and `tools/build_uf2.py` assembles both on your machine:
 
-**Tasks: Run Task → `UF2: Build release (sync -> BOOTSEL -> save)`**
+**Tasks: Run Task → `UF2: Build release (no board needed)`** — or
+`./tools/pico build`.
+
+It writes `build/robox-<version>.uf2` (version taken from
+`CURRENT_FIRMWARE_VERSION` in `src/main.py`), then verifies its own output by
+parsing the UF2 back and mounting the filesystem inside it. Two builds of the
+same tree are byte-identical.
+
+The first run downloads the pinned MicroPython firmware into `build/firmware/`;
+after that everything is offline. The other UF2 tasks:
+
+| Task | What it does |
+| --- | --- |
+| `UF2: Build release (offline, no download)` | Same build, fails rather than fetching a base firmware |
+| `UF2: Build filesystem-only update` | Small UF2 with just `src/`, leaves the board's MicroPython alone |
+| `UF2: Download base MicroPython firmware` | Cache the pinned stock UF2 (`./tools/pico firmware`) |
+| `UF2: Inspect a .uf2` | Flash map + file listing for any UF2, including board dumps |
+| `UF2: Capture from board (sync -> BOOTSEL -> save)` | The old hardware path, below |
+
+To put an image on a board, hold BOOTSEL while plugging it in and either drag the
+UF2 onto the `RPI-RP2` volume or run:
+
+```bash
+./tools/pico flash build/robox-2.0.1.uf2
+```
+
+#### Capturing a UF2 off a board instead
+
+Still useful for snapshotting a board that is already configured — a dump also
+carries `program.py` and calibration data, which a clean build leaves out.
+Needs picotool.
+
+**Tasks: Run Task → `UF2: Capture from board (sync -> BOOTSEL -> save)`**
 
 It runs, in order:
 
@@ -216,12 +249,9 @@ It runs, in order:
 3. a short wait for the `RPI-RP2` volume to mount
 4. `UF2: Save board flash to build/` — `picotool save -a build/robox-<timestamp>.uf2 -t uf2`
 
-The result lands in `build/`, which is gitignored. To put that image on another
-board, hold BOOTSEL while plugging it in, then:
-
-```bash
-./tools/pico flash build/robox-20260825-101500.uf2
-```
+A dump can be fed back in as the base for a build
+(`ROBOX_BASE_UF2=dump.uf2 ./tools/pico build`), which keeps its firmware and
+replaces its filesystem with a freshly built one.
 
 ---
 
@@ -318,7 +348,18 @@ the setup.
 **`picotool save` says "no accessible RP2040 devices"**
 The board isn't in BOOTSEL mode. Run `UF2: Reboot board into BOOTSEL`, or unplug
 and replug while holding the BOOTSEL button. On macOS you may need `sudo` for
-`picotool` depending on how it was installed.
+`picotool` depending on how it was installed. Building a release doesn't need
+either — use `./tools/pico build`.
+
+**`./tools/pico build` says littlefs-python is missing**
+`python3 -m pip install --user -r requirements-dev.txt`. The builder needs it to
+create the filesystem image; nothing else in the repo does.
+
+**The board won't boot after flashing a build**
+Check the filesystem window the build used against the board's real one:
+`./tools/pico fs-layout` prints the numbers, and `--fs-base`/`--fs-size`
+override them. The defaults are the 2 MB Pico's, and `build` normally reads the
+window straight out of the base firmware.
 
 **Uploads feel slow**
 Most of the cost is per-connection overhead (opening the port, interrupting the
@@ -339,8 +380,10 @@ copy into a single `mpremote` invocation so that cost is paid once. MicroPico's
 pyrightconfig.json         IntelliSense + type-checking config (authoritative)
 typings/                   MicroPython stubs (gitignored; ./tools/pico stubs)
 tools/pico                 mpremote/picotool wrapper backing all the tasks
-requirements-dev.txt        host-side Python deps (mpremote)
-build/                     UF2 output (gitignored)
+tools/build_uf2.py         host-side UF2 builder (no board needed)
+tests/test_build_uf2.py    offline tests for that builder
+requirements-dev.txt       host-side Python deps (mpremote, littlefs-python)
+build/                     UF2 output + cached base firmware (gitignored)
 ```
 
 Nothing in `src/` was changed — the firmware is untouched.

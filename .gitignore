@@ -12,7 +12,9 @@ typings/
 # Left over from the old extension-managed stub layout; safe to delete.
 .vscode/Pico-W-Stub/
 
-# UF2 artifacts produced by `./tools/pico uf2` / the "UF2: Build release" task.
+# UF2 artifacts produced by `./tools/pico build` / `./tools/pico uf2`, plus the
+# stock MicroPython firmware `./tools/pico firmware` caches in build/firmware.
+# All re-downloadable or rebuildable, so none of it is committed.
 build/*
 !build/.gitkeep
 

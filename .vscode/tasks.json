@@ -153,6 +153,13 @@
       "problemMatcher": []
     },
     {
+      "label": "Pico: Print filesystem layout",
+      "detail": "Read the board's real flash geometry (block size, block count, free space). Use it to confirm the --fs-base/--fs-size a UF2 build should use.",
+      "type": "shell",
+      "command": "./tools/pico fs-layout",
+      "problemMatcher": []
+    },
+    {
       "label": "Pico: Download a file from board",
       "detail": "Pull a file off the Pico into the repo root.",
       "type": "shell",
@@ -210,7 +217,46 @@
 
     // ===================================================================
     // UF2 release workflow (see README.md)
+    //
+    // "Build release UF2 (no board)" is the normal path: it assembles the
+    // artifact on this machine. The BOOTSEL/picotool tasks below stay for
+    // snapshotting a physical board and for flashing.
     // ===================================================================
+    {
+      "label": "UF2: Build release (no board needed)",
+      "detail": "Pack src/ into a littlefs image, bolt it onto the stock MicroPython firmware, and write build/robox-<version>.uf2. No Pico, no BOOTSEL.",
+      "type": "shell",
+      "command": "./tools/pico build",
+      "problemMatcher": []
+    },
+    {
+      "label": "UF2: Build release (offline, no download)",
+      "detail": "Same build, but fails instead of fetching the base MicroPython UF2. Run 'UF2: Download base MicroPython firmware' once first.",
+      "type": "shell",
+      "command": "./tools/pico build --offline",
+      "problemMatcher": []
+    },
+    {
+      "label": "UF2: Build filesystem-only update",
+      "detail": "A small UF2 with just src/ -- flashes the libraries onto a board that already runs the pinned MicroPython, leaving the firmware alone.",
+      "type": "shell",
+      "command": "./tools/pico build --no-base --sparse build/robox-libs.uf2",
+      "problemMatcher": []
+    },
+    {
+      "label": "UF2: Download base MicroPython firmware",
+      "detail": "Cache the pinned stock RPI_PICO UF2 in build/firmware/ so builds work offline.",
+      "type": "shell",
+      "command": "./tools/pico firmware",
+      "problemMatcher": []
+    },
+    {
+      "label": "UF2: Inspect a .uf2",
+      "detail": "Show a UF2's flash layout and list the files in its filesystem. Works on a build or on a board dump.",
+      "type": "shell",
+      "command": "./tools/pico inspect '${input:uf2Path}'",
+      "problemMatcher": []
+    },
     {
       "label": "UF2: Reboot board into BOOTSEL",
       "detail": "Put the Pico into mass-storage mode so picotool can read its flash. The RPI-RP2 volume appears.",
@@ -226,8 +272,8 @@
       "problemMatcher": []
     },
     {
-      "label": "UF2: Build release (sync -> BOOTSEL -> save)",
-      "detail": "The full README workflow in one command: upload src/, reboot to BOOTSEL, dump flash to build/*.uf2.",
+      "label": "UF2: Capture from board (sync -> BOOTSEL -> save)",
+      "detail": "The old hardware workflow: upload src/, reboot to BOOTSEL, dump the whole flash to build/*.uf2. Use it to snapshot a board; prefer 'UF2: Build release (no board needed)' for releases.",
       "dependsOrder": "sequence",
       "dependsOn": [
         "Pico: Upload src/ to board",

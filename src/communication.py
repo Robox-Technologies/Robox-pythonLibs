@@ -303,18 +303,33 @@ class BluetoothCommunuication(CommunicationInterface):
     def write(self, data):
         self.uart.write((data + "\r\n").encode())
 
-    def configure(bt):
-        bt.send_at("AT+UUID0xffe0")
-        bt.send_at("AT+CHAR0xffe1")
-        bt.send_at("AT+NOTI1")
-        bt.send_at("AT+NAMERoBox1")
-        bt.send_at("AT+RESET")
-        bt.send_at("AT")
+    def configure(self, name):
+        """Provision the module, once per board: `ble.configure("Robox20")`.
+
+        Set forms only. This clone has no query form, and `AT+NAME?` sets the
+        name to "?" rather than reporting it, which is how a board lost its own.
+
+        Returns False and names whatever the module rejected, since a refused
+        command otherwise looks exactly like one that applied. `AT+NOTI1` was
+        here for a long time and was always one of those.
+        """
+        rejected = []
+        for cmd in ("AT+UUID0xffe0", "AT+CHAR0xffe1", "AT+NAME" + name):
+            if "ERROR" in self.send_at(cmd):
+                rejected.append(cmd)
+
+        self.send_at("AT+RESET", wait=1.5)
+        if "OK" not in self.send_at("AT"):
+            rejected.append("AT (module did not come back)")
+
+        if rejected:
+            print("!!! rejected: {}".format(", ".join(rejected)))
+        return not rejected
 
     def send_at(self, cmd, wait=0.3):
-        """
-        Keep blocking behavior here because AT config
-        happens during setup only.
+        """Send one AT command and return the reply.
+
+        Blocking, which is fine: this only runs during provisioning.
         """
         full = cmd + "\r\n"
 

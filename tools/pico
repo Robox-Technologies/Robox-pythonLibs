@@ -19,8 +19,12 @@
 #   ./tools/pico reset                hard reset the Pico
 #   ./tools/pico stop                 interrupt the running program (Ctrl-C)
 #   ./tools/pico bootsel              reboot into BOOTSEL / mass-storage mode
+#   ./tools/pico build [out.uf2]      build a release UF2 from src/ -- no board needed
+#   ./tools/pico firmware [version]   download the base MicroPython UF2
+#   ./tools/pico inspect <file.uf2>   list the files inside a UF2
 #   ./tools/pico uf2 [out.uf2]        dump the Pico's flash to a UF2 (needs BOOTSEL)
 #   ./tools/pico flash <file.uf2>     load a UF2 onto a Pico in BOOTSEL mode
+#   ./tools/pico fs-layout            print the board's real filesystem geometry
 #   ./tools/pico doctor               check that the toolchain is installed
 #
 # Env overrides:
@@ -118,6 +122,18 @@ hint_connection_failure() {
   printf '  2. No board detected. Check with:  ./tools/pico devs\n' >&2
   printf '  3. Board is in BOOTSEL mode (shows up as the RPI-RP2 volume, not a\n' >&2
   printf '     serial port). Replug it without holding BOOTSEL.\n' >&2
+}
+
+# Locate a python3 for the host-side helpers (tools/build_uf2.py, pip).
+find_python() {
+  local candidate
+  for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      PY="$candidate"
+      return 0
+    fi
+  done
+  die "no python3 on PATH"
 }
 
 require_picotool() {
@@ -326,8 +342,72 @@ cmd_bootsel() {
   ok "The RPI-RP2 volume should appear shortly."
 }
 
-# Dump the Pico's entire flash to a UF2 -- the release artifact described in
-# README.md. Requires the board to already be in BOOTSEL mode.
+# Build the release UF2 on this machine: stock MicroPython firmware + a littlefs
+# image of src/. No board, no BOOTSEL, no picotool -- and the output is
+# reproducible, unlike a flash dump, which also carries whatever program.py and
+# calibration data the board happened to have.
+cmd_build() {
+  find_python
+  local args=() pattern
+  # Hand the sync exclusions to the builder so the UF2 contains exactly what
+  # `pico sync` would upload. One list, one behaviour.
+  for pattern in "${EXCLUDES[@]}"; do
+    args+=(--exclude "$pattern")
+  done
+  # A bare first argument is the output path; anything starting with '-' is a
+  # flag for the builder and passes straight through.
+  if [[ $# -ge 1 && "$1" != -* ]]; then
+    args+=(-o "$1")
+    shift
+  fi
+  # ${a[@]+...}: bash 3.2 treats an empty array as unbound under `set -u`.
+  "$PY" "$REPO_ROOT/tools/build_uf2.py" build --src "$REPO_ROOT/$SYNC_DIR" \
+    ${args[@]+"${args[@]}"} "$@"
+}
+
+# Fetch (and cache in build/firmware/) the stock MicroPython UF2 that `build`
+# uses as its base. Run once; after that builds work offline.
+cmd_firmware() {
+  find_python
+  local args=()
+  if [[ $# -ge 1 && "$1" != -* ]]; then
+    args+=(--version "$1")
+    shift
+  fi
+  "$PY" "$REPO_ROOT/tools/build_uf2.py" fetch ${args[@]+"${args[@]}"} "$@"
+}
+
+# List the files inside a UF2 -- works on anything built here and on a
+# `pico uf2` board dump, so you can see what a release actually contains.
+cmd_inspect() {
+  find_python
+  [[ $# -ge 1 ]] || die "usage: pico inspect <file.uf2>"
+  "$PY" "$REPO_ROOT/tools/build_uf2.py" inspect "$@"
+}
+
+# Ask the board where its filesystem really is. `build` normally reads this out
+# of the firmware image, so this is a cross-check for a board whose layout is
+# not the 2 MB Pico default.
+cmd_fs_layout() {
+  info "Reading the flash geometry from the board"
+  mp exec '
+import os, rp2
+f = rp2.Flash()
+block_size = f.ioctl(5, 0)
+block_count = f.ioctl(4, 0)
+size = block_size * block_count
+stat = os.statvfs("/")
+print("block size  ", block_size)
+print("block count ", block_count)
+print("filesystem  ", size, "bytes (%d KiB)" % (size // 1024))
+print("free        ", stat[0] * stat[3], "bytes")
+print("assuming a 2 MB flash, --fs-base 0x%x --fs-size %d" % (2 * 1024 * 1024 - size, size))
+'
+}
+
+# Dump the Pico's entire flash to a UF2 -- the capture path: use it to snapshot a
+# board that is already set up, or to obtain a base firmware for `build`.
+# Requires the board to already be in BOOTSEL mode.
 cmd_uf2() {
   require_picotool
   local out="${1:-$REPO_ROOT/build/robox-$(date +%Y%m%d-%H%M%S).uf2}"
@@ -357,11 +437,7 @@ STUBS_PACKAGE="micropython-rp2-rpi_pico-stubs"
 
 cmd_stubs() {
   local dest="$REPO_ROOT/typings"
-  local py
-  for py in python3 python; do
-    command -v "$py" >/dev/null 2>&1 && break
-  done
-  command -v "$py" >/dev/null 2>&1 || die "no python3 on PATH"
+  find_python
 
   # `pip install --target --upgrade` unlinks the old files before writing the
   # new ones, which fails on read-only or restricted mounts and can leave the
@@ -376,7 +452,7 @@ cmd_stubs() {
   # --target keeps the stubs local to the repo, so resolution doesn't depend on
   # which interpreter or virtualenv happens to be active.
   # pyrightconfig.json points stubPath here.
-  "$py" -m pip install --quiet --target "$dest" --no-user "$STUBS_PACKAGE" ||
+  "$PY" -m pip install --quiet --target "$dest" --no-user "$STUBS_PACKAGE" ||
     die "pip install failed"
 
   if [[ -f "$dest/machine.pyi" ]]; then
@@ -402,7 +478,25 @@ cmd_doctor() {
   if command -v picotool >/dev/null 2>&1; then
     ok "picotool        $(picotool version 2>&1 | head -1)"
   else
-    warn "picotool        MISSING (only needed for UF2 builds) -> brew install picotool"
+    warn "picotool        MISSING (needed to dump/flash a board; 'pico build' works without it) -> brew install picotool"
+  fi
+
+  # `pico build` needs this to create the littlefs image it packs into the UF2.
+  local py
+  for py in python3 python; do command -v "$py" >/dev/null 2>&1 && break; done
+  if command -v "$py" >/dev/null 2>&1 && "$py" -c 'import littlefs' >/dev/null 2>&1; then
+    ok "littlefs-python $("$py" -c 'import littlefs; print(littlefs.__version__)' 2>&1)"
+  else
+    warn "littlefs-python MISSING (needed by 'pico build') -> python3 -m pip install --user -r requirements-dev.txt"
+    rc=1
+  fi
+
+  local base
+  base="$(find "$REPO_ROOT/build/firmware" -name 'RPI_PICO-*.uf2' 2>/dev/null | head -1)"
+  if [[ -n "$base" ]]; then
+    ok "base firmware   $(basename "$base")"
+  else
+    warn "base firmware   not cached -> ./tools/pico firmware   (or 'pico build' downloads it)"
   fi
 
   if command -v code >/dev/null 2>&1; then
@@ -459,14 +553,25 @@ tools/pico -- Thonny-replacement CLI for the Robox Pico firmware.
   pico soft-reset             restart the interpreter (Thonny's "Send EOF")
   pico reset                  hard reset (machine.reset())
 
+  pico build [out.uf2]        build a release UF2 from src/ -- NO BOARD NEEDED
+  pico firmware [version]     download the base MicroPython UF2 into build/firmware
+  pico inspect <file.uf2>     list the files packed inside a UF2
+
   pico bootsel                reboot into BOOTSEL / mass-storage mode
   pico uf2 [out.uf2]          dump Pico flash to a UF2 (needs BOOTSEL + picotool)
   pico flash <file.uf2>       load a UF2 onto a Pico in BOOTSEL mode
+  pico fs-layout              print the board's real filesystem geometry
 
 Environment:
   PICO_PORT=/dev/cu.usbmodem1101   pin to a specific port (default: auto)
-  SYNC_DIR=src                     directory uploaded by `pico sync`
+  SYNC_DIR=src                     directory uploaded by `pico sync` and `pico build`
   DRY_RUN=1                        print commands instead of touching hardware
+  ROBOX_BASE_UF2=path.uf2          base firmware for `pico build`
+
+Extra flags after `pico build` reach tools/build_uf2.py, e.g.
+  pico build --offline             fail instead of downloading a base firmware
+  pico build --no-base --sparse    filesystem only: update the libs on a board
+                                   that already runs the right MicroPython
 EOF
 }
 
@@ -482,6 +587,9 @@ main() {
     help | -h | --help) usage; return 0 ;;
     doctor)             cmd_doctor "$@"; return $? ;;
     stubs)              cmd_stubs "$@"; return $? ;;
+    build | build-uf2)  cmd_build "$@"; return $? ;;
+    firmware)           cmd_firmware "$@"; return $? ;;
+    inspect)            cmd_inspect "$@"; return $? ;;
     uf2 | save)         cmd_uf2 "$@"; return $? ;;
     flash | load)       cmd_flash "$@"; return $? ;;
   esac
@@ -504,6 +612,7 @@ main() {
     reset | reboot) cmd_reset "$@" ;;
     soft-reset | softreset) cmd_soft_reset "$@" ;;
     bootsel | bootloader) cmd_bootsel "$@" ;;
+    fs-layout | fslayout) cmd_fs_layout "$@" ;;
     *)             die "unknown command '$sub' (try: pico help)" ;;
   esac
 }

@@ -7,6 +7,11 @@
 # .vscode/tasks.json via tools/pico.
 mpremote>=1.24.0
 
+# littlefs image builder, used by tools/build_uf2.py to assemble a release UF2
+# on the host instead of dumping one off a board. The Pico's filesystem is
+# littlefs2, so this is what lets `./tools/pico build` work with no hardware.
+littlefs-python>=0.12
+
 # NOTE: the MicroPython type stubs are NOT listed here on purpose.
 # They must land in ./typings (where pyrightconfig.json points stubPath), not
 # in site-packages, so they are installed with --target instead:
