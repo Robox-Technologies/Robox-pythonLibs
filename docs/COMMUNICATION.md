@@ -62,6 +62,45 @@ But USB still loses data at the *protocol* level:
 Not yet measured: driving GATT from Python on this machine needs macOS
 Bluetooth permission (see "Running the BLE benchmark" below).
 
+## After: framed protocol (firmware 1.1.0)
+
+Same board, same corpus, same USB link, both protocols against the same
+firmware. See [PROTOCOL.md](PROTOCOL.md) for the design.
+
+| | legacy | framed (v2) |
+|---|---|---|
+| integrity | 8/8 exact | 8/8 exact |
+| uploads confirmed by the board | 8/8 accepted | 8/8 **CRC-verified** |
+| protocol data loss | **75 bytes over 2 cases** | 4 bytes over 1 case |
+| `command_injection` stored | 49 of 120 bytes | **all 120** |
+| `command_guard` | stored (guard works) | stored |
+| mean throughput | 8578 B/s | 5552 B/s |
+
+What changed, and what did not:
+
+* **The injection is gone.** A program whose source contains `x03ENDUPLD` is
+  stored verbatim instead of truncating the upload. That is the 71 bytes.
+* **Uploads are now verified rather than merely accepted.** Under legacy, "ack"
+  meant the board said it closed the file. Under v2 it means the board
+  recomputed a CRC over what it actually wrote and the totals matched.
+* **Throughput drops 35% on USB.** That is the cost of 12 bytes of framing per
+  line plus ACK round trips on a link that never lost anything to begin with.
+  The trade only pays where loss is real, which is BLE, where credit pacing also
+  replaces the fixed 40 ms per chunk that caps legacy at roughly 500 B/s.
+* The remaining 4 bytes of "loss" are blank lines, which both ends agree to drop
+  so the CRC still matches. Deliberate; see PROTOCOL.md.
+
+Two bugs were found by testing rather than by reading, both of which would have
+caused real frame loss on hardware:
+
+* the uploader advanced its send window *after* writing a batch, so an ACK
+  arriving mid-write left the window inconsistent and the next advance skipped
+  frames that were never sent;
+* the board's sequence expectation persisted across uploads, so a second upload
+  on the same connection restarted at sequence 0, read as stale duplicates, and
+  was silently ignored. BEGIN is now a resynchronisation point. Verified on
+  hardware with two uploads and no reset between them.
+
 ## The command-injection hole
 
 Commands travel **in-band**: `main.py` compares each received line against a

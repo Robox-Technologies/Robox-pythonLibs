@@ -94,9 +94,11 @@ def upload(transport, code, chunk_size=None, chunk_delay=0.0):
         batch = window.ready()
 
         if batch:
+            # Account for the batch before sending: an ACK can land mid-write,
+            # and advancing afterwards would push past unsent frames.
+            window.advance(len(batch))
             for frame in batch:
                 send(frame)
-            window.advance(len(batch))
             last_progress = time.time()
         else:
             # Nothing may go out: either the credit is spent or an ACK went

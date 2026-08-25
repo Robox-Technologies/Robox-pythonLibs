@@ -75,6 +75,14 @@ class FramedSession:
 
         commands = []
         for frame in frames:
+            # BEGIN is a resynchronisation point by definition: it means "start
+            # this program from scratch". Without this, a second upload on the
+            # same connection restarts at sequence 0 while the receiver is
+            # still expecting N, so every frame reads as a stale duplicate and
+            # the whole upload is silently ignored.
+            if frame.kind == p.KIND_BEGIN:
+                self.receiver.reset(frame.seq)
+
             if self.receiver.accept(frame) != "accept":
                 continue
             command = self._apply(frame)
