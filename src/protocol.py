@@ -76,6 +76,45 @@ DEFAULT_CREDIT = 2048
 #: What the sender assumes before the first ACK.
 INITIAL_CREDIT = 512
 
+# --- pacing ----------------------------------------------------------------
+#
+# Credit bounds what the *board* buffers. It says nothing about the HM-10 in
+# between, which drains to the board over a 9600 baud UART and has a small
+# buffer of its own, so writes have to be paced as well.
+
+#: Bytes per BLE write-without-response.
+BLE_CHUNK_SIZE = 20
+
+#: HM-10 UART egress: 9600 baud, 8N1, ten bits on the wire per byte.
+UART_BYTES_PER_SECOND = 960
+
+#: The floor, and it is arithmetic rather than a guess: the time the module
+#: needs to forward one chunk to the board. Pace faster than this and bytes are
+#: offered faster than they can leave, so overflow is certain given enough of
+#: them. Measured sweeps agree: 25ms held with strain, 20ms collapsed to a
+#: seventh of the goodput at 7x the wire traffic.
+MIN_CHUNK_DELAY_MS = int(
+    BLE_CHUNK_SIZE * 1000 / UART_BYTES_PER_SECOND
+) + 1
+
+#: Where a fresh connection starts. Deliberately well clear of the floor: the
+#: first upload should be safe, not fast.
+START_CHUNK_DELAY_MS = 40
+
+#: Ceiling, for a link bad enough that backing off keeps helping.
+MAX_CHUNK_DELAY_MS = 120
+
+#: Clean acknowledged batches required before probing faster.
+CLEAN_BATCHES_BEFORE_PROBE = 2
+
+#: Milliseconds shaved per probe.
+PROBE_STEP_MS = 2
+
+#: Multiplier applied on loss. Backing off hard and probing back gently is the
+#: right asymmetry here, because the downside of being too fast is a collapse
+#: and the downside of being too slow is a few percent.
+BACKOFF_FACTOR = 1.3
+
 
 class ProtocolError(Exception):
     pass
@@ -446,6 +485,85 @@ class SequencedReceiver:
         return self.expected, self.credit
 
 
+class AdaptivePacer:
+    """Chooses the inter-chunk delay from the loss the link is showing.
+
+    Additive decrease, multiplicative increase, on the delay. A fixed constant
+    cannot be right for every board: the same firmware runs behind HM-10s of
+    varying quality, at varying distances, in varying interference. The
+    protocol already produces the signal needed to tune it, so this uses it.
+
+    State lives on the connection rather than the upload, so a second upload
+    starts from what the link already taught us instead of probing again.
+    """
+
+    def __init__(
+        self,
+        delay_ms=START_CHUNK_DELAY_MS,
+        minimum_ms=MIN_CHUNK_DELAY_MS,
+        maximum_ms=MAX_CHUNK_DELAY_MS,
+        clean_before_probe=CLEAN_BATCHES_BEFORE_PROBE,
+        probe_step_ms=PROBE_STEP_MS,
+        backoff=BACKOFF_FACTOR,
+    ):
+        self.minimum_ms = minimum_ms
+        self.maximum_ms = maximum_ms
+        self.clean_before_probe = clean_before_probe
+        self.probe_step_ms = probe_step_ms
+        self.backoff = backoff
+
+        self.delay_ms = self._clamp(delay_ms)
+        self.clean_streak = 0
+
+        # Reported so a run can be explained after the fact.
+        self.probes = 0
+        self.backoffs = 0
+        self.fastest_ms = self.delay_ms
+        self.slowest_ms = self.delay_ms
+
+    def _clamp(self, value):
+        return max(self.minimum_ms, min(self.maximum_ms, value))
+
+    def on_clean_batch(self):
+        """A batch was acknowledged with nothing lost. Consider probing."""
+        self.clean_streak += 1
+        if self.clean_streak < self.clean_before_probe:
+            return False
+
+        self.clean_streak = 0
+        if self.delay_ms <= self.minimum_ms:
+            return False
+
+        self.delay_ms = self._clamp(self.delay_ms - self.probe_step_ms)
+        self.probes += 1
+        self.fastest_ms = min(self.fastest_ms, self.delay_ms)
+        return True
+
+    def on_loss(self):
+        """A NAK, a damaged frame, or a timeout. Back off."""
+        self.clean_streak = 0
+        if self.delay_ms >= self.maximum_ms:
+            return False
+
+        self.delay_ms = self._clamp(int(self.delay_ms * self.backoff + 0.5))
+        self.backoffs += 1
+        self.slowest_ms = max(self.slowest_ms, self.delay_ms)
+        return True
+
+    def delay_seconds(self):
+        return self.delay_ms / 1000.0
+
+    def stats(self):
+        return {
+            "delay_ms": self.delay_ms,
+            "fastest_ms": self.fastest_ms,
+            "slowest_ms": self.slowest_ms,
+            "probes": self.probes,
+            "backoffs": self.backoffs,
+            "floor_ms": self.minimum_ms,
+        }
+
+
 class CreditWindow:
     """Sender-side flow control and retransmission bookkeeping.
 
@@ -482,12 +600,17 @@ class CreditWindow:
         self.next_index = min(len(self.frames), self.next_index + count)
 
     def on_ack(self, expected_seq, credit):
+        """True when the acknowledgement actually moved the window."""
         self.credit = credit or self.credit
+
         index = self._index_for_seq(expected_seq)
-        if index > self.base:
-            self.base = min(index, len(self.frames))
+        if index <= self.base:
+            return False
+
+        self.base = min(index, len(self.frames))
         if self.next_index < self.base:
             self.next_index = self.base
+        return True
 
     def on_nak(self, expected_seq):
         """Rewind so transmission resumes where the receiver wants."""

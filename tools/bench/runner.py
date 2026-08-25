@@ -90,15 +90,12 @@ def run_case(
     ack_timeout=10.0,
     settle=0.5,
     chunk_delay_ms=None,
+    pacer=None,
 ):
     """Upload one corpus and read the result back over USB."""
     from . import protocol_shim
 
-    delay = (
-        transports.BLE_WRITE_TIMEOUT_S
-        if chunk_delay_ms is None
-        else chunk_delay_ms / 1000.0
-    )
+    delay = 0.0 if chunk_delay_ms is None else chunk_delay_ms / 1000.0
 
     # Every non-blank line is stored verbatim, so the oracle is just the
     # normalised program. There are no protocol losses left to model.
@@ -108,6 +105,7 @@ def run_case(
         code,
         chunk_size=transports.BLE_CHUNK_SIZE if transport.chunked else None,
         chunk_delay=delay if transport.chunked else 0.0,
+        pacer=pacer if transport.chunked else None,
     )
     upload["ack_received"] = upload.get("verified", False)
     upload["device_messages"] = upload.pop("replies", [])
@@ -158,6 +156,7 @@ def run_case(
     result["wire_overhead_ratio"] = (
         round(written / delivered, 2) if delivered else None
     )
+    result["pacing"] = upload.get("pacing")
     return result
 
 
@@ -192,4 +191,7 @@ def summarise(results):
         "retransmits": retransmits,
         "gave_up": gave_up,
         "elapsed_seconds": round(elapsed, 2),
+        "final_pacing": next(
+            (r["pacing"] for r in reversed(results) if r.get("pacing")), None
+        ),
     }

@@ -301,6 +301,93 @@ class TestCreditWindow(unittest.TestCase):
         self.assertTrue(window.complete())
 
 
+class TestAdaptivePacer(unittest.TestCase):
+    def test_floor_is_the_uart_drain_time(self):
+        """The floor is arithmetic, not a tuning guess."""
+        drain_ms = p.BLE_CHUNK_SIZE * 1000 / p.UART_BYTES_PER_SECOND
+        self.assertGreater(p.MIN_CHUNK_DELAY_MS, drain_ms)
+        self.assertLess(p.MIN_CHUNK_DELAY_MS, drain_ms + 2)
+
+    def test_clean_link_probes_down_to_the_floor_and_stops(self):
+        pacer = p.AdaptivePacer()
+        for _ in range(500):
+            pacer.on_clean_batch()
+        self.assertEqual(pacer.delay_ms, p.MIN_CHUNK_DELAY_MS)
+
+    def test_never_goes_below_the_floor(self):
+        """Below the floor, overflow is arithmetic. It must be unreachable."""
+        pacer = p.AdaptivePacer(delay_ms=p.MIN_CHUNK_DELAY_MS)
+        for _ in range(50):
+            pacer.on_clean_batch()
+            self.assertGreaterEqual(pacer.delay_ms, p.MIN_CHUNK_DELAY_MS)
+
+    def test_probing_needs_a_streak(self):
+        pacer = p.AdaptivePacer(delay_ms=40, clean_before_probe=3)
+        pacer.on_clean_batch()
+        pacer.on_clean_batch()
+        self.assertEqual(pacer.delay_ms, 40)
+        pacer.on_clean_batch()
+        self.assertLess(pacer.delay_ms, 40)
+
+    def test_loss_backs_off_multiplicatively(self):
+        pacer = p.AdaptivePacer(delay_ms=30)
+        pacer.on_loss()
+        self.assertGreater(pacer.delay_ms, 30)
+        self.assertLessEqual(pacer.delay_ms, p.MAX_CHUNK_DELAY_MS)
+
+    def test_loss_resets_the_clean_streak(self):
+        """Otherwise a single clean batch after loss would probe straight back."""
+        pacer = p.AdaptivePacer(delay_ms=40, clean_before_probe=2)
+        pacer.on_clean_batch()
+        pacer.on_loss()
+        before = pacer.delay_ms
+        pacer.on_clean_batch()
+        self.assertEqual(pacer.delay_ms, before)
+
+    def test_capped_above(self):
+        pacer = p.AdaptivePacer(delay_ms=p.MAX_CHUNK_DELAY_MS)
+        self.assertFalse(pacer.on_loss())
+        self.assertEqual(pacer.delay_ms, p.MAX_CHUNK_DELAY_MS)
+
+    def test_converges_around_a_links_true_capacity(self):
+        """Simulate a link that loses below `capacity` and check where it sits.
+
+        The controller cannot know `capacity`; it only sees loss. This asserts
+        it ends up near it rather than oscillating to an extreme.
+        """
+        for capacity in (24, 28, 34, 45):
+            pacer = p.AdaptivePacer()
+            seen = []
+            for _ in range(400):
+                if pacer.delay_ms < capacity:
+                    pacer.on_loss()
+                else:
+                    pacer.on_clean_batch()
+                seen.append(pacer.delay_ms)
+
+            settled = seen[-100:]
+            self.assertGreaterEqual(
+                min(settled), p.MIN_CHUNK_DELAY_MS,
+                "capacity %d: went below the floor" % capacity,
+            )
+            average = sum(settled) / len(settled)
+            self.assertLess(
+                abs(average - capacity), capacity * 0.35,
+                "capacity %d: settled at %.1f, too far off" % (capacity, average),
+            )
+
+    def test_state_survives_for_the_next_upload(self):
+        """The pacer belongs to the connection, not the upload."""
+        pacer = p.AdaptivePacer()
+        for _ in range(20):
+            pacer.on_clean_batch()
+        learned = pacer.delay_ms
+        self.assertLess(learned, p.START_CHUNK_DELAY_MS)
+        # A second upload keeps going from here rather than restarting at 40.
+        pacer.on_clean_batch()
+        self.assertLessEqual(pacer.delay_ms, learned)
+
+
 class LossyLink:
     """Seeded channel that drops, truncates and duplicates whole BLE chunks.
 

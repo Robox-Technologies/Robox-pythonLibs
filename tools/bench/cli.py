@@ -12,7 +12,7 @@ import datetime
 import json
 import sys
 
-from . import corpus, report as report_module, runner, transports
+from . import corpus, protocol_shim, report as report_module, runner, transports
 
 
 def build_parser():
@@ -25,13 +25,17 @@ def build_parser():
                         help="run the whole corpus set N times")
     parser.add_argument("--port", default=None, help="serial port (default: auto)")
     parser.add_argument("--ble-address", default=None, help="skip the BLE scan")
+    parser.add_argument(
+        "--chunk-usb", action="store_true",
+        help="split USB writes into BLE-sized chunks and pace them. USB never "
+             "drops, so this exercises the pacing loop against real hardware "
+             "without testing the backoff path.")
     parser.add_argument("--ack-timeout", type=float, default=10.0)
     parser.add_argument(
         "--chunk-delay-ms", type=float, default=None,
-        help="pause between BLE chunk writes. Defaults to the website's 40ms. "
-             "The credit window bounds what the *board* buffers, but the HM-10 "
-             "in between drains at only 9600 baud and has its own small buffer, "
-             "so sweep this to find where integrity actually breaks.")
+        help="pin the pause between BLE chunk writes to a fixed value, "
+             "disabling adaptive pacing. Only useful for comparing against the "
+             "adaptive controller, which is the default.")
     parser.add_argument("--out", default=None, help="write the JSON report here")
     parser.add_argument("--no-reset", action="store_true",
                         help="do not hard-reset the board before each case")
@@ -53,7 +57,10 @@ def firmware_version(port=None):
 
 def make_transport(args):
     if args.transport == "usb":
-        return transports.UsbTransport(port=args.port)
+        transport = transports.UsbTransport(port=args.port)
+        if args.chunk_usb:
+            transport.chunked = True
+        return transport
     return transports.BleTransport(address=args.ble_address)
 
 
@@ -76,6 +83,14 @@ def main(argv=None):
     results = []
     transport = make_transport(args)
 
+    # One pacer for the whole run, since it belongs to the connection: what the
+    # link teaches us on the first corpus should carry into the next.
+    pacer = (
+        None
+        if args.chunk_delay_ms is not None
+        else protocol_shim.new_pacer()
+    )
+
     for iteration in range(args.repeat):
         for name, text in cases:
             if not args.no_reset:
@@ -92,6 +107,7 @@ def main(argv=None):
                     port=args.port,
                     ack_timeout=args.ack_timeout,
                     chunk_delay_ms=args.chunk_delay_ms,
+                    pacer=pacer,
                 )
             finally:
                 transport.close()
@@ -124,11 +140,10 @@ def main(argv=None):
             "started": started,
             "repeat": args.repeat,
             "chunk_size": transports.BLE_CHUNK_SIZE if args.transport == "ble" else None,
-            "write_delay_s": (
-                (args.chunk_delay_ms / 1000.0
-                 if args.chunk_delay_ms is not None
-                 else transports.BLE_WRITE_TIMEOUT_S)
-                if args.transport == "ble" else None
+            "pacing": (
+                "fixed %gms" % args.chunk_delay_ms
+                if args.chunk_delay_ms is not None
+                else "adaptive"
             ),
         },
         "results": results,

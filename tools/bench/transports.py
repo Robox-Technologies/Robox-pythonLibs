@@ -13,9 +13,9 @@ import subprocess
 import sys
 import time
 
-# Mirrors webBle.ts / iosBle.ts.
+# Mirrors bleTransport.ts. The pause between chunks is not a constant any more:
+# AdaptivePacer in src/protocol.py decides it from observed loss.
 BLE_CHUNK_SIZE = 20
-BLE_WRITE_TIMEOUT_S = 0.040
 
 UART_SERVICE_UUID = "0000ffe0-0000-1000-8000-00805f9b34fb"
 UART_CHARACTERISTIC_UUID = "0000ffe1-0000-1000-8000-00805f9b34fb"

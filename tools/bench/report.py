@@ -10,6 +10,8 @@ def render(report):
     lines.append("=" * 62)
     lines.append("protocol   %s" % meta["protocol"])
     lines.append("transport  %s" % meta["transport"])
+    if meta.get("pacing"):
+        lines.append("pacing     %s" % meta["pacing"])
     lines.append("firmware   %s" % meta.get("firmware", "?"))
     lines.append("started    %s" % meta["started"])
     lines.append("")
@@ -65,6 +67,17 @@ def render(report):
     lines.append("wire rate            %s B/s pushed, %sx overhead, %d retransmit(s)" % (
         summary["wire_bytes_per_second"], summary["wire_overhead_ratio"],
         summary["retransmits"]))
+    pacing = summary.get("final_pacing")
+    if pacing:
+        lines.append(
+            "pacing settled       %sms (floor %sms, ranged %s-%sms, "
+            "%d probe(s), %d backoff(s))"
+            % (
+                pacing["delay_ms"], pacing["floor_ms"],
+                pacing["fastest_ms"], pacing["slowest_ms"],
+                pacing["probes"], pacing["backoffs"],
+            )
+        )
     if summary["gave_up"]:
         lines.append("GAVE UP ON          %s" % ", ".join(summary["gave_up"]))
     lines.append("corrupt-but-runnable %d lines  <-- silently executed garbage" %

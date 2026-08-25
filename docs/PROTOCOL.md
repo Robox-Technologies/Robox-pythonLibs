@@ -96,6 +96,54 @@ not at a fixed count. Whatever arrived together is one batch. A fixed count
 would strand an upload shorter than `ACK_EVERY` waiting for a frame that never
 comes.
 
+## Pacing
+
+Credit bounds what the **board** buffers. It says nothing about the HM-10 in
+between, which forwards to the board over a 9600 baud UART and has a small
+buffer of its own, so writes have to be paced as well. Pacing was a constant
+(40 ms per 20-byte chunk) until a sweep showed why that cannot be right.
+
+### The floor is arithmetic
+
+One chunk takes `20 / 960 = 20.83 ms` to leave the module. Pace faster than
+that and bytes are offered faster than they can go, so overflow is certain
+given enough of them. `MIN_CHUNK_DELAY_MS` is therefore 21, derived rather than
+chosen, and the controller cannot go below it.
+
+The measured sweep sits exactly on that boundary, which is the useful part:
+
+| delay | goodput | wire overhead | retransmits | vs floor |
+|---|---|---|---|---|
+| 40 ms | 249 B/s | 1.40x | 0 | above |
+| 30 ms | 307 B/s | 1.46x | 2 | above |
+| 25 ms | 269 B/s | 1.96x | 5 | above, strained |
+| 20 ms | 93 B/s | 7.15x | 31 | **below** |
+
+Below the floor it is not slow degradation, it is collapse: a seventh of the
+goodput at seven times the wire traffic. Integrity held at 8/8 throughout,
+because go-back-N kept repairing it, which is the protocol working and also
+what hid the problem.
+
+### The controller
+
+`AdaptivePacer` does additive decrease, multiplicative increase, on the delay:
+
+* an acknowledgement that **moves the window** is evidence the link is coping.
+  Two in a row and the delay drops 2 ms. A repeat of an ACK we already had
+  proves nothing and is ignored;
+* a NAK, a damaged frame, or a timeout multiplies the delay by 1.3.
+
+Backing off hard and probing back gently is the right asymmetry: too fast
+costs a collapse, too slow costs a few percent.
+
+It starts at 40 ms, well clear of the floor, because the first upload should be
+safe rather than fast. State lives on the **connection**, not the upload, so a
+second upload starts from what the link already taught us.
+
+Unlike the frame format, the two implementations do not have to agree here:
+pacing is local policy, and the receiver neither knows nor cares. They are kept
+identical anyway so the benchmark measures what the website will do.
+
 ## Sequence verification, go-back-N
 
 The receiver tracks the next sequence it expects.

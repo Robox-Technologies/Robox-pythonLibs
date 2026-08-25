@@ -16,3 +16,7 @@ def normalise(text):
 
 def program_checksum(text):
     return protocol.program_checksum(text)
+
+
+def new_pacer():
+    return protocol.AdaptivePacer()

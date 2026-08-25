@@ -29,11 +29,12 @@ MAX_UPLOAD_SECONDS = 120.0
 VERDICT_TIMEOUT_S = 6.0
 
 
-def upload(transport, code, chunk_size=None, chunk_delay=0.0):
+def upload(transport, code, chunk_size=None, chunk_delay=0.0, pacer=None):
     """Send `code` as frames and return what happened.
 
     `chunk_size` splits each write to imitate a BLE MTU; None sends whole
-    frames, which is what a reliable stream does.
+    frames, which is what a reliable stream does. Pass a `pacer` to have the
+    delay tuned from observed loss, or a fixed `chunk_delay` to pin it.
     """
     frames = p.encode_program(code)
     window = p.CreditWindow(frames, credit=p.INITIAL_CREDIT)
@@ -71,12 +72,17 @@ def upload(transport, code, chunk_size=None, chunk_delay=0.0):
         for frame in found:
             if frame.kind == p.KIND_ACK:
                 expected, credit = p.parse_flow(frame.payload)
-                window.on_ack(expected, credit)
+                # Only an ACK that moved the window is evidence the link is
+                # coping. A repeat of one we already had proves nothing.
+                if window.on_ack(expected, credit) and pacer is not None:
+                    pacer.on_clean_batch()
                 stats["acks"] += 1
             elif frame.kind == p.KIND_NAK:
                 expected, _ = p.parse_flow(frame.payload)
                 if window.on_nak(expected):
                     stats["naks"] += 1
+                if pacer is not None:
+                    pacer.on_loss()
             elif frame.kind == p.KIND_CONTINUE:
                 # A device message longer than one payload. Hold the piece
                 # until the terminating REPLY frame arrives.
@@ -99,8 +105,11 @@ def upload(transport, code, chunk_size=None, chunk_delay=0.0):
                 transport.write_raw(chunk)
                 stats["chunks"] += 1
                 stats["writes"] += 1
-                if chunk_delay:
-                    time.sleep(chunk_delay)
+                # Read fresh each chunk, so a mid-upload backoff takes effect
+                # immediately rather than on the next upload.
+                pause = pacer.delay_seconds() if pacer is not None else chunk_delay
+                if pause:
+                    time.sleep(pause)
         else:
             transport.write_raw(frame)
             stats["writes"] += 1
@@ -133,6 +142,10 @@ def upload(transport, code, chunk_size=None, chunk_delay=0.0):
                 # the retransmit, and the counter is what bounds this loop.
                 # Without it a peer that has gone quiet spins here forever.
                 window.rewind_to_base()
+                # A silent peer is the same evidence as a NAK: we are offering
+                # faster than it can take.
+                if pacer is not None:
+                    pacer.on_loss()
                 last_progress = time.time()
             else:
                 time.sleep(0.005)
@@ -150,6 +163,7 @@ def upload(transport, code, chunk_size=None, chunk_delay=0.0):
 
     stats["retransmits"] = window.retransmits
     stats.setdefault("gave_up", None)
+    stats["pacing"] = pacer.stats() if pacer is not None else None
     stats["local_write_seconds"] = round(local_done - started, 4)
     stats["total_seconds"] = round(time.time() - started, 4)
     stats["verdict"] = verdict
