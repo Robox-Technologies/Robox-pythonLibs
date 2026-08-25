@@ -7,45 +7,100 @@ import _thread
 
 
 # ========================
+# Tuning
+# ========================
+
+# The single most important number here. MicroPython's rp2 UART defaults to a
+# 64-byte receive buffer, which at 9600 baud is about 66ms of runway. The main
+# loop does blocking work between reads -- file writes, prints, calibration --
+# and a user program on the second core competes for the GIL, so overrunning
+# 64 bytes was easy and the overflow is silent: bytes vanish mid-line and the
+# board stores whatever is left.
+UART_RX_BUFFER = 4096
+
+# 9600 baud, 8N1, so ten bits on the wire per byte.
+UART_BYTES_PER_SECOND = 960
+
+# Pacing headroom over the theoretical line rate, to leave the module's own
+# buffer somewhere to go.
+SEND_HEADROOM = 1.4
+
+# Smallest gap between BLE sends. Enough to cover per-write overhead without
+# imposing the old flat 300ms, which capped console output at ~3 messages a
+# second regardless of how small they were.
+MIN_SEND_INTERVAL_MS = 15
+
+# An unbounded queue on a 264KB device is a crash waiting to happen. When a
+# user program prints faster than the link drains, drop the oldest: recent
+# output is more useful than stale output.
+MAX_QUEUED_MESSAGES = 64
+
+
+# ========================
 # Global outgoing queue
 # ========================
 outgoing_messages = []
 queue_lock = _thread.allocate_lock()
 
+# Count of messages dropped to keep the queue bounded, so the loss is
+# reportable rather than invisible.
+dropped_message_count = 0
+
 
 def queue_outgoing_message(comm, message_type, content):
+    global dropped_message_count
+
     queue_lock.acquire()
     try:
+        if len(outgoing_messages) >= MAX_QUEUED_MESSAGES:
+            outgoing_messages.pop(0)
+            dropped_message_count += 1
         outgoing_messages.append((comm, message_type, content))
     finally:
         queue_lock.release()
 
 
 def flush_outgoing_messages():
+    """Send at most one queued message, if any interface is ready for it.
+
+    The lock is held only long enough to take an entry off the queue. The
+    previous version released it mid-iteration and then relied on
+    `queue_lock.locked()` in a finally block to decide whether to release
+    again -- but `locked()` reports the state of the lock, not whether *this*
+    thread owns it, so if the other core acquired it in that window this
+    function released a lock belonging to someone else.
+    """
+    pending = None
+
     queue_lock.acquire()
     try:
-        if not outgoing_messages:
-            return
-
-        # iterate over copy so we can rotate safely
-        for i in range(len(outgoing_messages)):
-            comm, message_type, content = outgoing_messages.pop(0)
-
-            # BLE throttle check
+        for index in range(len(outgoing_messages)):
+            comm = outgoing_messages[index][0]
+            # BLE paces itself; skip it while it is still draining and try the
+            # next entry, which may belong to an interface that is ready.
             if hasattr(comm, "can_send_now") and not comm.can_send_now():
-                # put it back at end of queue
-                outgoing_messages.append(
-                    (comm, message_type, content)
-                )
                 continue
-
-            queue_lock.release()
-            comm._write_message_now(message_type, content)
-            return
-
+            pending = outgoing_messages.pop(index)
+            break
     finally:
-        if queue_lock.locked():
-            queue_lock.release()
+        queue_lock.release()
+
+    if pending is None:
+        return False
+
+    comm, message_type, content = pending
+    # Deliberately outside the lock: writing can block on the UART, and the
+    # user program's thread must still be able to queue while that happens.
+    comm._write_message_now(message_type, content)
+    return True
+
+
+def queued_message_count():
+    queue_lock.acquire()
+    try:
+        return len(outgoing_messages)
+    finally:
+        queue_lock.release()
 
 
 # ========================
@@ -61,6 +116,21 @@ class CommunicationInterface:
     def read_line(self):
         raise NotImplementedError
 
+    def read_lines(self, limit=128):
+        """Drain up to `limit` complete lines.
+
+        The main loop used to take a single line per iteration per interface,
+        so a burst arriving faster than the loop spun would sit in the UART
+        buffer until it overflowed. Draining is what keeps the buffer empty.
+        """
+        lines = []
+        for _ in range(limit):
+            line = self.read_line()
+            if not line:
+                break
+            lines.append(line)
+        return lines
+
     def write_message(self, message_type, content):
         """
         Public API used everywhere else.
@@ -75,9 +145,6 @@ class CommunicationInterface:
 # ========================
 # USB
 # ========================
-USB_CHARGING_PIN = Pin("GPIO24", Pin.IN)
-
-
 class USBCommunication(CommunicationInterface):
     def __init__(self):
         self.name = "USB"
@@ -97,8 +164,7 @@ class USBCommunication(CommunicationInterface):
         return line.rstrip("\n") if line else None
 
     def _write_message_now(self, message_type, content):
-        message = generate_message(message_type, content)
-        print(message)
+        print(generate_message(message_type, content))
 
     def sleep(self):
         self.sleeping = True
@@ -120,7 +186,8 @@ class BluetoothCommunuication(CommunicationInterface):
                 uart_port,
                 baudrate=baudrate,
                 tx=Pin(0),
-                rx=Pin(1)
+                rx=Pin(1),
+                rxbuf=UART_RX_BUFFER,
             )
 
             self.buffer = b""
@@ -129,68 +196,62 @@ class BluetoothCommunuication(CommunicationInterface):
             # Rate limiting
             self.next_send_time = 0
 
-        except:
+            # Bytes discarded because they would not decode. Tracked so a
+            # corrupt link is measurable instead of merely suspected.
+            self.decode_errors = 0
+
+        except Exception:
             self.ok = False
 
     def available(self):
         return self.ok
 
     def read_line(self):
-        # Return complete buffered lines first
-        if b"\n" in self.buffer:
-            while b"\n" in self.buffer:
-                line, self.buffer = self.buffer.split(b"\n", 1)
+        # Take everything the UART has first, so the hardware buffer is emptied
+        # even when the caller only wants one line out of it.
+        if self.uart.any():
+            data = self.uart.read()
+            if data:
+                self.buffer += (
+                    data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+                )
 
-                if line.strip():
-                    try:
-                        return line.decode()
-                    except:
-                        return None
+        while b"\n" in self.buffer:
+            line, self.buffer = self.buffer.split(b"\n", 1)
 
-            return None
+            if not line.strip():
+                continue
 
-        if not self.uart.any():
-            return None
+            try:
+                return line.decode()
+            except Exception:
+                self.decode_errors += 1
+                continue
 
-        data = self.uart.read()
-
-        if not data:
-            return None
-
-        self.buffer += (
-            data.replace(b"\r\n", b"\n")
-            .replace(b"\r", b"\n")
-        )
-
-        return self.read_line()
+        return None
 
     def can_send_now(self):
-        return time.ticks_diff(
-            time.ticks_ms(),
-            self.next_send_time
-        ) >= 0
+        return time.ticks_diff(time.ticks_ms(), self.next_send_time) >= 0
 
     def _write_message_now(self, message_type, content):
-        message = generate_message(message_type, content)
+        message = generate_message(message_type, content) + "\n"
+        payload = message.encode()
 
-        print(
-            "Sending over BLE: {}".format(message)
+        self.uart.write(payload)
+
+        # Pace by the number of bytes actually sent rather than a flat delay.
+        # The old fixed 300ms throttled a 20-byte status message exactly as
+        # hard as a 400-byte traceback, which capped console output at roughly
+        # three messages a second.
+        transmit_ms = int(
+            len(payload) * 1000 * SEND_HEADROOM / UART_BYTES_PER_SECOND
         )
-
-        self.uart.write(
-            (message + "\n").encode()
-        )
-
-        # throttle future sends
         self.next_send_time = time.ticks_add(
-            time.ticks_ms(),
-            300
+            time.ticks_ms(), max(MIN_SEND_INTERVAL_MS, transmit_ms)
         )
 
     def write(self, data):
-        self.uart.write(
-            (data + "\r\n").encode()
-        )
+        self.uart.write((data + "\r\n").encode())
 
     def sleep(self):
         if self.ok and not self.sleeping:
@@ -230,14 +291,10 @@ class BluetoothCommunuication(CommunicationInterface):
 
         try:
             decoded = response.decode().strip()
-        except:
+        except Exception:
             decoded = str(response)
 
-        print(
-            "<<< {}".format(
-                decoded if decoded else "(no response)"
-            )
-        )
+        print("<<< {}".format(decoded if decoded else "(no response)"))
         print()
 
         return decoded

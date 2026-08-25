@@ -58,6 +58,13 @@ def simulate_firmware(lines):
         if not line.strip():
             continue
         command = HANDLED_COMMANDS.get(line.strip())
+
+        # Mid-upload, the firmware honours only end_upload and treats every
+        # other command-looking line as program text. That shrinks the
+        # injection surface to one string; the framed protocol closes it.
+        if out_open and command != "end_upload":
+            command = None
+
         if command == "begin_upload":
             if stored:
                 events.append((index, line.strip(), "truncated %d stored lines" % len(stored)))

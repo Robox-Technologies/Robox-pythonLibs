@@ -172,6 +172,28 @@ def command_injection():
     )
 
 
+def command_guard():
+    """A bare `x01FIRMCHECK` in the middle of an upload.
+
+    The firmware honours only end_upload while an upload is in flight, so this
+    line must be *stored as program text*, not executed. Before that guard
+    existed it was swallowed, the board replied with its firmware version, and
+    it put the other interface to sleep -- mid-upload.
+
+    x01FIRMCHECK is the safe choice for this: even if it somehow were acted on,
+    the worst case is a redundant version reply.
+    """
+    return "\n".join(
+        [
+            "print('guard test')",
+            "value = 41",
+            "x01FIRMCHECK",
+            "value = value + 1",
+            "print(value)",
+        ]
+    )
+
+
 # Ordered smallest-first so a run fails fast on the cheap cases.
 CORPORA = (
     ("tiny", tiny),
@@ -181,6 +203,7 @@ CORPORA = (
     ("edge_cases", edge_cases),
     ("stress", stress),
     ("command_injection", command_injection),
+    ("command_guard", command_guard),
 )
 
 
