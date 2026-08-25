@@ -14,8 +14,9 @@ def render(report):
     lines.append("started    %s" % meta["started"])
     lines.append("")
 
-    header = "%-18s %7s %8s %7s %8s %8s %6s" % (
-        "corpus", "sent", "expected", "stored", "verdict", "thr B/s", "lost")
+    header = "%-18s %7s %8s %7s %8s %7s %8s %7s %5s" % (
+        "corpus", "sent", "expected", "stored", "verdict",
+        "secs", "goodput", "wire", "retx")
     lines.append(header)
     lines.append("-" * len(header))
     for result in report["results"]:
@@ -23,27 +24,34 @@ def render(report):
         # `lost` is bytes the protocol discards even over a perfect link. The
         # 1-byte differences are the trailing newline the board adds, which is
         # not loss, so only real loss is shown.
-        loss = result.get("protocol_loss_bytes", 0)
         lines.append(
-            "%-18s %7d %8s %7s %8s %8s %6s"
+            "%-18s %7d %8s %7s %8s %7s %8s %7s %5s"
             % (
                 result["corpus"],
                 result["sent_bytes"],
                 grade.get("expected_bytes", "-"),
                 grade.get("actual_bytes", "-"),
                 "EXACT" if grade["exact_match"] else "%.4f" % (grade.get("byte_accuracy") or 0),
-                result["throughput_bytes_per_second"] or "-",
-                loss if loss > 1 else "-",
+                "%.2f" % (result.get("total_seconds") or 0),
+                result.get("goodput_bytes_per_second") or "-",
+                result.get("wire_bytes_per_second") or "-",
+                result.get("retransmits", "-"),
             )
         )
+        if result.get("gave_up"):
+            lines.append("%-18s   gave up: %s" % ("", result["gave_up"]))
 
     lines.append("")
     lines.append(
         "sent      raw corpus bytes.\n"
-        "expected  what the protocol should store for it. Identical to sent\n"
-        "          apart from one guaranteed trailing newline, which is the\n"
-        "          only reason the two ever differ.\n"
-        "verdict   EXACT means stored == expected. Never compared against sent."
+        "expected  what the protocol should store: identical to sent apart\n"
+        "          from one guaranteed trailing newline.\n"
+        "verdict   EXACT means stored == expected. Never compared against sent.\n"
+        "goodput   program bytes landed on the board per second of wall clock.\n"
+        "          The number that matters.\n"
+        "wire      bytes pushed per second, counting framing and every\n"
+        "          retransmission, so a lossy run scores HIGHER on it. Only\n"
+        "          meaningful next to goodput and retx."
     )
     lines.append("")
     summary = report["summary"]
@@ -52,7 +60,13 @@ def render(report):
     lines.append("board confirmations  %d/%d uploads" % (
         summary["uploads_confirmed_by_board"], summary["cases"]))
     lines.append("mean byte accuracy   %s" % summary["mean_byte_accuracy"])
-    lines.append("mean throughput      %s B/s" % summary["mean_throughput_bytes_per_second"])
+    lines.append("goodput              %s B/s delivered over %ss" % (
+        summary["goodput_bytes_per_second"], summary["elapsed_seconds"]))
+    lines.append("wire rate            %s B/s pushed, %sx overhead, %d retransmit(s)" % (
+        summary["wire_bytes_per_second"], summary["wire_overhead_ratio"],
+        summary["retransmits"]))
+    if summary["gave_up"]:
+        lines.append("GAVE UP ON          %s" % ", ".join(summary["gave_up"]))
     lines.append("corrupt-but-runnable %d lines  <-- silently executed garbage" %
                  summary["corrupt_lines_that_would_still_run"])
     lines.append("protocol data loss   %d bytes across %d case(s)  <-- lost by design, not by the link" % (

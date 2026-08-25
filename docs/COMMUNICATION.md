@@ -158,6 +158,54 @@ python3 -m pip install --user bleak
 ./tools/comm-bench --transport ble --out docs/comm-baseline-ble.json
 ```
 
+## BLE pacing: the delay sweep
+
+The credit window bounds what the *board* buffers, but the HM-10 between the
+two drains to it at only 9600 baud with a small buffer of its own, so writes
+still have to be paced. Sweeping `--chunk-delay-ms` on this board and this
+radio environment:
+
+| delay | goodput | wire overhead | retransmits | `stress` wall time | integrity |
+|---|---|---|---|---|---|
+| 40 ms | 249 B/s | 1.40x | 0 | 27 s | 8/8 |
+| **30 ms** | **307 B/s** | 1.46x | 2 | 22 s | 8/8 |
+| 25 ms | 269 B/s | 1.96x | 5 | 27 s | 8/8 |
+| 20 ms | 93 B/s | 7.15x | 31 | 91 s | 8/8 |
+
+Two things to take from this.
+
+**It is a cliff, not a slope.** Below about 25 ms the HM-10 starts dropping
+writes, go-back-N repairs them, and the repairs cost more than the pacing
+saved. At 20 ms the run pushed 60 KB of wire traffic to deliver 7.2 KB of
+program. Integrity stays 8/8 throughout, which is the protocol doing its job,
+but goodput falls off a third of a cliff.
+
+**Faster is not better past the optimum.** 25 ms is *slower* than 30 ms
+despite writing sooner, because five retransmits cost more than the saved
+delay. The default stays at the conservative 40 ms; 30 ms is measurably better
+here, but this is one board in one RF environment and the downside of guessing
+low is a 3x collapse.
+
+Reproduce with:
+
+```bash
+for d in 40 35 30 25; do ./tools/comm-bench --transport ble --chunk-delay-ms $d --out docs/ble-$d.json; done
+```
+
+## Reading throughput
+
+Three different questions, which the report used to conflate into one number:
+
+| column | meaning |
+|---|---|
+| `goodput` | program bytes landed on the board per second of wall clock |
+| `wire` | bytes pushed per second, counting framing and every retransmission |
+| `retx` | retransmissions |
+
+`goodput` is the one that matters. `wire` counts framing overhead and repeats,
+so **a lossy run scores higher on it**, which is exactly backwards: the old
+report showed only that number and made a thrashing link look fast.
+
 ## Hardware notes
 
 The board is a plain Raspberry Pi Pico with an external HM-10 Bluetooth module

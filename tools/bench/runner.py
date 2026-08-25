@@ -141,7 +141,23 @@ def run_case(
 
     written = upload["bytes_written"]
     seconds = upload["total_seconds"] or upload["local_write_seconds"]
-    result["throughput_bytes_per_second"] = round(written / seconds, 1) if seconds else None
+    delivered = result["grade"].get("actual_bytes") or 0
+
+    # Three different questions, previously conflated into one number.
+    #
+    # goodput is the one that matters: program bytes actually landed on the
+    # board per second of wall clock. wire_rate is how fast bytes were pushed,
+    # which counts framing and every retransmission, so a lossy run scores
+    # *higher* on it. Reporting only that made a thrashing link look fast.
+    result["goodput_bytes_per_second"] = (
+        round(delivered / seconds, 1) if seconds and delivered else None
+    )
+    result["wire_bytes_per_second"] = (
+        round(written / seconds, 1) if seconds else None
+    )
+    result["wire_overhead_ratio"] = (
+        round(written / delivered, 2) if delivered else None
+    )
     return result
 
 
@@ -151,7 +167,11 @@ def summarise(results):
     acked = sum(1 for r in results if r["ack_received"])
     dangerous = sum(r["grade"].get("corrupt_lines_still_valid_python", 0) for r in results)
     protocol_loss = sum(max(0, r.get("protocol_loss_bytes", 0)) for r in results)
-    throughputs = [r["throughput_bytes_per_second"] for r in results if r["throughput_bytes_per_second"]]
+    delivered = sum(r["grade"].get("actual_bytes") or 0 for r in results)
+    wire = sum(r.get("bytes_written") or 0 for r in results)
+    elapsed = sum(r.get("total_seconds") or 0 for r in results)
+    retransmits = sum(r.get("retransmits") or 0 for r in results)
+    gave_up = [r["corpus"] for r in results if r.get("gave_up")]
     accuracies = [r["grade"].get("byte_accuracy") for r in results if r["grade"].get("byte_accuracy") is not None]
     return {
         "cases": total,
@@ -164,5 +184,12 @@ def summarise(results):
         "cases_with_protocol_loss": sum(
             1 for r in results if r.get("protocol_loss_bytes", 0) > 1
         ),
-        "mean_throughput_bytes_per_second": round(sum(throughputs) / len(throughputs), 1) if throughputs else None,
+        # Aggregated over the whole run rather than averaged per case, so a
+        # handful of tiny corpora cannot drag the figure around.
+        "goodput_bytes_per_second": round(delivered / elapsed, 1) if elapsed else None,
+        "wire_bytes_per_second": round(wire / elapsed, 1) if elapsed else None,
+        "wire_overhead_ratio": round(wire / delivered, 2) if delivered else None,
+        "retransmits": retransmits,
+        "gave_up": gave_up,
+        "elapsed_seconds": round(elapsed, 2),
     }

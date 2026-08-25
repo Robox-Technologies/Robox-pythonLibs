@@ -503,5 +503,18 @@ class CreditWindow:
             return True
         return False
 
+    def rewind_to_base(self):
+        """Resend from the oldest unacknowledged frame. The timeout path.
+
+        Counts as a retransmit, which is what bounds the caller's retry loop.
+        Setting next_index directly does not, and a sender that does so spins
+        forever against a peer that has gone quiet.
+        """
+        if self.next_index > self.base:
+            self.next_index = self.base
+            self.retransmits += 1
+            return True
+        return False
+
     def complete(self):
         return self.base >= len(self.frames)

@@ -20,6 +20,11 @@ ACK_TIMEOUT_S = 0.75
 #: Give up after this many rewinds, rather than looping on a dead link.
 MAX_RETRANSMITS = 40
 
+#: Hard ceiling per upload. A pacing setting too aggressive for the link sends
+#: go-back-N into a thrash that technically converges but takes minutes, which
+#: reads as a hang. Fail with the numbers instead.
+MAX_UPLOAD_SECONDS = 120.0
+
 #: How long to wait for the board's upload verdict after the END frame.
 VERDICT_TIMEOUT_S = 6.0
 
@@ -102,6 +107,10 @@ def upload(transport, code, chunk_size=None, chunk_delay=0.0):
         stats["bytes_written"] += len(frame)
 
     while not window.complete():
+        if time.time() - started > MAX_UPLOAD_SECONDS:
+            stats["gave_up"] = "exceeded MAX_UPLOAD_SECONDS"
+            break
+
         batch = window.ready()
 
         if batch:
@@ -118,9 +127,12 @@ def upload(transport, code, chunk_size=None, chunk_delay=0.0):
             pump()
             if time.time() - last_progress > ACK_TIMEOUT_S:
                 if window.retransmits >= MAX_RETRANSMITS:
+                    stats["gave_up"] = "hit MAX_RETRANSMITS"
                     break
-                window.next_index = window.base
-                stats["retransmits"] += 1
+                # rewind_to_base, not a bare next_index assignment: it counts
+                # the retransmit, and the counter is what bounds this loop.
+                # Without it a peer that has gone quiet spins here forever.
+                window.rewind_to_base()
                 last_progress = time.time()
             else:
                 time.sleep(0.005)
@@ -136,7 +148,8 @@ def upload(transport, code, chunk_size=None, chunk_delay=0.0):
         if not pump():
             time.sleep(0.01)
 
-    stats["retransmits"] += window.retransmits
+    stats["retransmits"] = window.retransmits
+    stats.setdefault("gave_up", None)
     stats["local_write_seconds"] = round(local_done - started, 4)
     stats["total_seconds"] = round(time.time() - started, 4)
     stats["verdict"] = verdict
