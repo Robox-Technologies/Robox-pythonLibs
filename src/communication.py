@@ -131,6 +131,14 @@ class CommunicationInterface:
     def _write_message_now(self, message_type, content):
         raise NotImplementedError
 
+    def write_raw(self, data):
+        """Send bytes immediately, bypassing the outgoing queue.
+
+        Only for flow control: an ACK queued behind a traceback stalls the
+        sender until its timeout fires.
+        """
+        raise NotImplementedError
+
 
 # ========================
 # USB
@@ -155,6 +163,14 @@ class USBCommunication(CommunicationInterface):
 
     def _write_message_now(self, message_type, content):
         print(generate_message(message_type, content))
+
+    def write_raw(self, data):
+        # stdout.buffer, not stdout: the text stream translates a lone newline
+        # into CRLF, which inserts a byte inside the frame and breaks its
+        # length. Frames have to go out exactly as encoded.
+        if isinstance(data, str):
+            data = data.encode()
+        sys.stdout.buffer.write(data)
 
     def sleep(self):
         self.sleeping = True
@@ -235,6 +251,9 @@ class BluetoothCommunuication(CommunicationInterface):
         self.next_send_time = time.ticks_add(
             time.ticks_ms(), max(MIN_SEND_INTERVAL_MS, transmit_ms)
         )
+
+    def write_raw(self, data):
+        self.uart.write(data)
 
     def write(self, data):
         self.uart.write((data + "\r\n").encode())

@@ -51,6 +51,17 @@ KIND_REPLY = "R"     # device to host message (JSON)
 
 DATA_KINDS = (KIND_DATA, KIND_CONTINUE)
 
+#: Payloads a COMMAND frame may carry. Anything else is refused, so a malformed
+#: frame cannot reach the dispatcher.
+COMMAND_NAMES = (
+    "firmware_check",
+    "start_program",
+    "calibrate_color",
+    "reset_device",
+    "boot_loader",
+    "disconnect_device",
+)
+
 SEQUENCE_MODULO = 256
 
 #: Ack after this many accepted frames. The amortisation factor.
@@ -205,7 +216,8 @@ def parse_end(payload):
 
 def encode_flow(seq, kind, expected_seq, credit):
     """An ACK or NAK. Both carry the next sequence the receiver wants."""
-    return encode_frame(seq, kind, "%02x,%04x" % (expected_seq & 0xFF, credit))
+    payload = "%02x,%04x" % (expected_seq & 0xFF, credit)
+    return encode_frame(seq, kind, payload.encode())
 
 
 def parse_flow(payload):
@@ -214,6 +226,27 @@ def parse_flow(payload):
 
 
 # --- decoding --------------------------------------------------------------
+
+def _parse_hex(data, offset, width):
+    """Parse `width` ASCII hex digits from a buffer, or -1 if not hex.
+
+    Hand-rolled because MicroPython's int() will not accept a bytes or
+    bytearray slice, unlike CPython's. Mirrors parseHex in frames.ts.
+    """
+    value = 0
+    for index in range(offset, offset + width):
+        byte = data[index]
+        if 0x30 <= byte <= 0x39:
+            digit = byte - 0x30
+        elif 0x61 <= byte <= 0x66:
+            digit = byte - 0x61 + 10
+        elif 0x41 <= byte <= 0x46:
+            digit = byte - 0x41 + 10
+        else:
+            return -1
+        value = value * 16 + digit
+    return value
+
 
 class Frame:
     __slots__ = ("seq", "kind", "payload")
@@ -242,6 +275,8 @@ class FrameReader:
     """
 
     def __init__(self, max_buffer=4096):
+        # Advanced by slice reassignment rather than `del buffer[:n]`:
+        # MicroPython bytearrays do not support item deletion.
         self.buffer = bytearray()
         self.max_buffer = max_buffer
         self.damaged = 0
@@ -255,7 +290,7 @@ class FrameReader:
         # corrupt run cannot pin the buffer for the rest of the session.
         if len(self.buffer) > self.max_buffer:
             last = self.buffer.rfind(bytes((SOH,)))
-            del self.buffer[: last if last > 0 else len(self.buffer)]
+            self.buffer = self.buffer[last if last > 0 else len(self.buffer) :]
             self.resyncs += 1
 
         frames = []
@@ -264,20 +299,20 @@ class FrameReader:
         while True:
             start = self.buffer.find(bytes((SOH,)))
             if start == -1:
-                del self.buffer[:]
+                self.buffer = bytearray()
                 break
             if start > 0:
                 # Debris from a lost frame.
-                del self.buffer[:start]
+                self.buffer = self.buffer[start:]
 
             if len(self.buffer) < HEADER_LENGTH:
                 break
 
-            try:
-                seq = int(self.buffer[1:3], 16)
-                length = int(self.buffer[3:5], 16)
-                checksum = int(self.buffer[5:9], 16)
-            except ValueError:
+            seq = _parse_hex(self.buffer, 1, 2)
+            length = _parse_hex(self.buffer, 3, 2)
+            checksum = _parse_hex(self.buffer, 5, 4)
+
+            if seq < 0 or length < 0 or checksum < 0:
                 damage += 1
                 self._resync()
                 continue
@@ -310,7 +345,7 @@ class FrameReader:
                 continue
 
             frames.append(Frame(seq, kind, payload))
-            del self.buffer[:total]
+            self.buffer = self.buffer[total:]
 
         self.damaged += damage
         return frames, damage
@@ -318,10 +353,9 @@ class FrameReader:
     def _resync(self):
         """Skip this sentinel, hunt for the next."""
         next_start = self.buffer.find(bytes((SOH,)), 1)
-        if next_start == -1:
-            del self.buffer[:]
-        else:
-            del self.buffer[:next_start]
+        self.buffer = (
+            bytearray() if next_start == -1 else self.buffer[next_start:]
+        )
         self.resyncs += 1
 
 

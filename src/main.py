@@ -9,12 +9,16 @@ from communication import (
     BluetoothCommunuication,
     flush_outgoing_messages,
 )
+from framed import FRAME_PREFIX, FramedSession
 
 # Echo received lines back as console messages. Off by default: it doubles
 # upload traffic on the same 9600-baud link it would be used to diagnose.
 DEBUG = False
 
-CURRENT_FIRMWARE_VERSION = "1.0.0"
+# 1.1.0 advertises framed protocol support. The website falls back to the
+# legacy path against 1.0.0, which is also how the benchmark compares them.
+CURRENT_FIRMWARE_VERSION = "1.1.0"
+PROTOCOL_VERSION = 2
 PROGRAM_FILENAME = "program.py"
 
 # Backstop so a flood cannot starve the outgoing queue. A full 4KB buffer is
@@ -82,6 +86,27 @@ out_file = None
 # on Run reports something useful.
 program_running = False
 
+# Framed sessions, created on the first framed line from an interface.
+framed_sessions = {}
+
+
+def framed_session(comm):
+    session = framed_sessions.get(comm)
+    if session is None:
+        session = FramedSession(comm, PROGRAM_FILENAME)
+        framed_sessions[comm] = session
+    return session
+
+
+def upload_is_verified(comm):
+    """True when this interface's last framed upload passed its checks.
+
+    Legacy uploads have nothing to verify against, so they pass rather than
+    being blocked by a check they cannot satisfy.
+    """
+    session = framed_sessions.get(comm)
+    return session is None or session.verified
+
 
 def run_user_program(comm):
     global program_running
@@ -119,12 +144,19 @@ def handle_line(comm, line):
     Split out of the loop so it can drain every buffered line per iteration,
     which is what keeps the UART buffer from overflowing mid-upload.
     """
-    global out_file, current_communication_method, program_running
+    global out_file
 
     if DEBUG:
         comm.write_message(
             "console", "Received over {}: {}".format(comm.name, line)
         )
+
+    # A frame is one line starting with SOH, which legacy text cannot contain,
+    # so the two protocols share the link without a mode switch.
+    if line.startswith(FRAME_PREFIX):
+        for name in framed_session(comm).feed(line):
+            dispatch_command(comm, name)
+        return
 
     command = COMMANDS.get(line.strip())
 
@@ -135,6 +167,45 @@ def handle_line(comm, line):
     # Shrinks the injection surface to one string.
     if out_file and command != "end_upload":
         command = None
+
+    if command in ("begin_upload", "end_upload"):
+        handle_legacy_upload(comm, command)
+    elif command:
+        dispatch_command(comm, command)
+    elif out_file:
+        LED.toggle()
+        out_file.write(line + "\n")
+
+
+def handle_legacy_upload(comm, command):
+    """The unframed upload path, kept for firmware 1.0.0 clients."""
+    global out_file
+
+    if command == "begin_upload":
+        if out_file:
+            # A second begin without an end means the first never finished.
+            try:
+                out_file.close()
+            except Exception:
+                pass
+        try:
+            os.remove(PROGRAM_FILENAME)
+        except OSError:
+            pass
+        out_file = open(PROGRAM_FILENAME, "w")
+        return
+
+    if out_file:
+        out_file.close()
+        out_file = None
+        comm.write_message("download", "")
+    else:
+        comm.write_message("error", "No upload in progress")
+
+
+def dispatch_command(comm, command):
+    """Act on a control command, however it arrived."""
+    global current_communication_method, program_running
 
     # ----------------------
     # Firmware check
@@ -151,7 +222,10 @@ def handle_line(comm, line):
             usb.sleep()
 
         current_communication_method = comm
-        comm.write_message("firmware", CURRENT_FIRMWARE_VERSION)
+        comm.write_message(
+            "firmware",
+            "%s+proto%d" % (CURRENT_FIRMWARE_VERSION, PROTOCOL_VERSION),
+        )
 
     # ----------------------
     # Start program
@@ -159,6 +233,14 @@ def handle_line(comm, line):
     elif command == "start_program":
         if program_running:
             comm.write_message("error", "A program is already running")
+            return
+
+        # The point of the whole exercise: refuse to run a program the board
+        # cannot confirm it received intact.
+        if not upload_is_verified(comm):
+            comm.write_message(
+                "error", "Upload did not verify, refusing to run it"
+            )
             return
 
         LED.on()
@@ -172,36 +254,6 @@ def handle_line(comm, line):
             return
 
         comm.write_message("download", "")
-
-    # ----------------------
-    # Begin upload
-    # ----------------------
-    elif command == "begin_upload":
-        if out_file:
-            # A second begin without an end means the first never finished.
-            # Close the handle rather than leaking it.
-            try:
-                out_file.close()
-            except Exception:
-                pass
-
-        try:
-            os.remove(PROGRAM_FILENAME)
-        except OSError:
-            pass
-
-        out_file = open(PROGRAM_FILENAME, "w")
-
-    # ----------------------
-    # End upload
-    # ----------------------
-    elif command == "end_upload":
-        if out_file:
-            out_file.close()
-            out_file = None
-            comm.write_message("download", "")
-        else:
-            comm.write_message("error", "No upload in progress")
 
     # ----------------------
     # Color calibration
@@ -247,13 +299,6 @@ def handle_line(comm, line):
         if usb in communications and usb.sleeping:
             usb.wake()
 
-    # ----------------------
-    # Program upload stream
-    # ----------------------
-    elif out_file:
-        LED.toggle()
-        out_file.write(line + "\n")
-
 
 # ----------------------
 # Main loop
@@ -267,5 +312,14 @@ while True:
 
         # Drain everything buffered. One line per iteration meant a fast burst
         # sat in the UART buffer until it overflowed, losing bytes mid-line.
-        for line in comm.read_lines(MAX_LINES_PER_POLL):
+        lines = comm.read_lines(MAX_LINES_PER_POLL)
+        for line in lines:
             handle_line(comm, line)
+
+        # Acknowledge once per drain rather than per frame: whatever arrived
+        # together is one batch, which is where the round-trip saving comes
+        # from.
+        if lines:
+            session = framed_sessions.get(comm)
+            if session is not None:
+                session.flush()

@@ -19,8 +19,9 @@ def build_parser():
     parser = argparse.ArgumentParser(prog="bench", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--transport", choices=("usb", "ble"), default="usb")
-    parser.add_argument("--protocol", choices=("legacy",), default="legacy",
-                        help="wire protocol to exercise (v2 lands in a later phase)")
+    parser.add_argument("--protocol", choices=("legacy", "v2"), default="legacy",
+                        help="legacy is the unframed path; v2 is framed with "
+                             "sequence numbers and checksums")
     parser.add_argument("--corpus", action="append", default=None,
                         help="run only this corpus (repeatable); default is all")
     parser.add_argument("--repeat", type=int, default=1,
@@ -82,7 +83,12 @@ def main(argv=None):
             transport.open()
             try:
                 result = runner.run_case(
-                    transport, name, text, port=args.port, ack_timeout=args.ack_timeout
+                    transport,
+                    name,
+                    text,
+                    port=args.port,
+                    ack_timeout=args.ack_timeout,
+                    protocol=args.protocol,
                 )
             finally:
                 transport.close()
