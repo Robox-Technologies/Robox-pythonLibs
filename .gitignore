@@ -18,3 +18,5 @@ build/*
 
 # The user program that main.py writes to flash at runtime; not source.
 /program.py
+
+docs/*.json
