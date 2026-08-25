@@ -31,6 +31,13 @@ MIN_SEND_INTERVAL_MS = 15
 # prints faster than the link drains.
 MAX_QUEUED_MESSAGES = 64
 
+# Cap on a partial line waiting for its newline. The module's own chatter has
+# no terminator, so without this it accumulates for the life of the session.
+MAX_LINE_LENGTH = 4 * (p.FRAME_OVERHEAD + p.MAX_PAYLOAD)
+
+# As bytes, for searching a raw receive buffer.
+SOH_BYTE = bytes([p.SOH])
+
 
 # ========================
 # Global outgoing queue
@@ -166,9 +173,10 @@ class CommunicationInterface:
 class USBCommunication(CommunicationInterface):
     def __init__(self):
         self.name = "USB"
-        self.sleeping = False
-
         self.out_seq = 0
+
+        # Tracked so a corrupt link is measurable, not just suspected.
+        self.decode_errors = 0
 
         self.poller = select.poll()
         self.poller.register(sys.stdin, select.POLLIN)
@@ -180,7 +188,15 @@ class USBCommunication(CommunicationInterface):
         if not self.poller.poll(0):
             return None
 
-        line = sys.stdin.readline()
+        try:
+            line = sys.stdin.readline()
+        except Exception:
+            # One undecodable byte used to raise straight out of the main loop
+            # and drop the board to a REPL. The frame it belonged to is lost,
+            # and the missing sequence number is what reports that.
+            self.decode_errors += 1
+            return None
+
         return line.rstrip("\n") if line else None
 
     def _write_message_now(self, message_type, content):
@@ -195,12 +211,6 @@ class USBCommunication(CommunicationInterface):
             data = data.encode()
         sys.stdout.buffer.write(data)
 
-    def sleep(self):
-        self.sleeping = True
-
-    def wake(self):
-        self.sleeping = False
-
 
 # ========================
 # Bluetooth
@@ -208,7 +218,6 @@ class USBCommunication(CommunicationInterface):
 class BluetoothCommunuication(CommunicationInterface):
     def __init__(self, uart_port=0, baudrate=9600):
         self.name = "Bluetooth"
-        self.sleeping = False
 
         try:
             self.uart = UART(
@@ -244,8 +253,20 @@ class BluetoothCommunuication(CommunicationInterface):
                     data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
                 )
 
+        # Keep everything from the newest sentinel, where a frame can still
+        # start.
+        if len(self.buffer) > MAX_LINE_LENGTH:
+            start = self.buffer.rfind(SOH_BYTE)
+            self.buffer = self.buffer[start:] if start > 0 else b""
+
         while b"\n" in self.buffer:
             line, self.buffer = self.buffer.split(b"\n", 1)
+
+            # As bytes, before decoding: chatter in front of a frame need not
+            # be valid UTF-8, and decoding first lost the frame with it.
+            start = line.find(SOH_BYTE)
+            if start > 0:
+                line = line[start:]
 
             if not line.strip():
                 continue
@@ -281,15 +302,6 @@ class BluetoothCommunuication(CommunicationInterface):
 
     def write(self, data):
         self.uart.write((data + "\r\n").encode())
-
-    def sleep(self):
-        if self.ok and not self.sleeping:
-            self.uart.write("AT+SLEEP\r\n")
-            self.sleeping = True
-
-    def wake(self):
-        self.uart.write("AT\r\n")
-        self.sleeping = False
 
     def configure(bt):
         bt.send_at("AT+UUID0xffe0")

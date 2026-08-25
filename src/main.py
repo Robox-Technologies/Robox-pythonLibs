@@ -11,8 +11,10 @@ from communication import (
 from framed import FRAME_PREFIX, FramedSession
 
 # 2.0.0 is frame-only. There is no unframed path any more, so a client still
-# speaking the old bare-line protocol gets no response and must update.
-CURRENT_FIRMWARE_VERSION = "2.0.0"
+# speaking the old bare-line protocol gets no response and must update. 2.0.1
+# survives link noise in front of a frame; same wire protocol, so the client's
+# 2.0.0 minimum is unchanged.
+CURRENT_FIRMWARE_VERSION = "2.0.1"
 PROTOCOL_VERSION = 2
 
 PROGRAM_FILENAME = "program.py"
@@ -121,16 +123,11 @@ def dispatch_command(comm, command):
     # Firmware check
     # ----------------------
     if command == "firmware_check":
-        if current_communication_method and current_communication_method != comm:
-            comm.write_message("error", "Already connected over another interface")
-            return
-
-        if comm == usb and ble in communications:
-            ble.sleep()
-
-        elif comm == ble and usb in communications:
-            usb.sleep()
-
+        # Handed over rather than refused, and nothing is slept. The board never
+        # learns that a Bluetooth central went away, so a claim only ever clears
+        # explicitly: refusing the next client stranded the board until a power
+        # cycle, and a slept interface could only be woken over the other one.
+        # A firmware check is a fresh client announcing itself.
         current_communication_method = comm
         comm.write_message(
             "firmware",
@@ -179,12 +176,6 @@ def dispatch_command(comm, command):
     # Reset device
     # ----------------------
     elif command == "reset_device":
-        if ble in communications and ble.sleeping:
-            ble.wake()
-
-        if usb in communications and usb.sleeping:
-            usb.wake()
-
         machine.reset()
 
     # ----------------------
@@ -200,24 +191,37 @@ def dispatch_command(comm, command):
         if comm == current_communication_method:
             current_communication_method = None
 
-        if ble in communications and ble.sleeping:
-            ble.wake()
-
-        if usb in communications and usb.sleeping:
-            usb.wake()
-
 
 def handle_line(comm, line):
     """Act on one received line.
 
-    Only frames are accepted. Anything else is either a client that has not
-    been updated or noise on the link, and is ignored rather than guessed at.
+    Only frames are accepted, but taken from wherever the sentinel is rather
+    than only from the front: the module's unterminated chatter arrives glued to
+    the next frame, and the first frame of a session is the firmware check. SOH
+    cannot appear in a payload, so finding it is unambiguous.
     """
-    if not line.startswith(FRAME_PREFIX):
+    start = line.find(FRAME_PREFIX)
+    if start < 0:
         return
 
-    for name in framed_session(comm).feed(line):
+    for name in framed_session(comm).feed(line[start:]):
         dispatch_command(comm, name)
+
+
+def poll(comm):
+    """Read and act on everything one interface has buffered."""
+    # Drain everything buffered. One line per iteration meant a fast burst sat
+    # in the UART buffer until it overflowed, losing bytes mid-line.
+    lines = comm.read_lines(MAX_LINES_PER_POLL)
+    for line in lines:
+        handle_line(comm, line)
+
+    # Acknowledge once per drain rather than per frame: whatever arrived
+    # together is one batch, which is where the round-trip saving comes from.
+    if lines:
+        session = framed_sessions.get(comm)
+        if session is not None:
+            session.flush()
 
 
 # ----------------------
@@ -226,20 +230,7 @@ def handle_line(comm, line):
 while True:
     flush_outgoing_messages()
 
+    # Every interface is read every pass. Skipping one was how the board ended
+    # up unreachable over Bluetooth after a USB session.
     for comm in communications:
-        if comm.sleeping:
-            continue
-
-        # Drain everything buffered. One line per iteration meant a fast burst
-        # sat in the UART buffer until it overflowed, losing bytes mid-line.
-        lines = comm.read_lines(MAX_LINES_PER_POLL)
-        for line in lines:
-            handle_line(comm, line)
-
-        # Acknowledge once per drain rather than per frame: whatever arrived
-        # together is one batch, which is where the round-trip saving comes
-        # from.
-        if lines:
-            session = framed_sessions.get(comm)
-            if session is not None:
-                session.flush()
+        poll(comm)

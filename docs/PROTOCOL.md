@@ -46,6 +46,11 @@ gives two useful properties: SOH is an unambiguous place to resynchronise after
 loss, and one frame is always one line, so the existing line-oriented plumbing
 on both sides works unchanged.
 
+Both ends scan a line for SOH rather than requiring it at the front. The
+Bluetooth module shares the board's UART with its own status and AT strings,
+none of them terminated, so they arrive glued to the next frame; anything ahead
+of the sentinel is counted and dropped.
+
 Maximum payload is 108 bytes, six BLE chunks including overhead. Longer source
 lines are split across `C` frames on character boundaries, never mid-codepoint.
 
