@@ -41,6 +41,20 @@
       "problemMatcher": []
     },
     {
+      "label": "Pico: Install type stubs",
+      "detail": "Install the MicroPython RP2040 stubs into typings/ so Pylance resolves machine, utime, ustruct, _thread. Reload the window afterwards.",
+      "type": "shell",
+      "command": "./tools/pico stubs",
+      "problemMatcher": []
+    },
+    {
+      "label": "Pico: Type-check project",
+      "detail": "Run pyright over src/ and template_program.py using pyrightconfig.json -- the same analysis Pylance does, but in one shot.",
+      "type": "shell",
+      "command": "npx --yes pyright",
+      "problemMatcher": []
+    },
+    {
       "label": "Pico: Install dev dependencies",
       "detail": "pip install mpremote and the MicroPython stubs into your active Python environment.",
       "type": "shell",

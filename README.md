@@ -17,7 +17,8 @@ Quick start with VS Code:
 
 ```bash
 python3 -m pip install --user -r requirements-dev.txt
-./tools/pico doctor          # check mpremote / picotool / MicroPico
+./tools/pico stubs           # MicroPython stubs for IntelliSense -> typings/
+./tools/pico doctor          # check the toolchain
 ./tools/pico sync            # upload src/ to the Pico
 ./tools/pico repl            # open the MicroPython prompt
 ```
@@ -34,6 +35,7 @@ src/communication.py   USB / BLE transports and the outgoing message queue
 src/lib/picozero       vendored dependency
 template_program.py    starting point for a user robot program
 tools/pico             mpremote/picotool wrapper (CLI + backs the VS Code tasks)
+pyrightconfig.json     IntelliSense / type-checking config
 docs/VSCODE.md         editor setup and workflows
 ```
 

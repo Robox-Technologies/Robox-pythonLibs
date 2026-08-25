@@ -350,6 +350,43 @@ cmd_flash() {
 
 # Deliberately never fatal: this is the command you run *because* something is
 # missing, so it has to survive a missing toolchain and report it.
+# Install the MicroPython type stubs Pylance needs into ./typings.
+# Board target: the plain RP2040 Pico. For a Pico W it would be
+# micropython-rp2-rpi_pico_w-stubs instead.
+STUBS_PACKAGE="micropython-rp2-rpi_pico-stubs"
+
+cmd_stubs() {
+  local dest="$REPO_ROOT/typings"
+  local py
+  for py in python3 python; do
+    command -v "$py" >/dev/null 2>&1 && break
+  done
+  command -v "$py" >/dev/null 2>&1 || die "no python3 on PATH"
+
+  # `pip install --target --upgrade` unlinks the old files before writing the
+  # new ones, which fails on read-only or restricted mounts and can leave the
+  # directory half-updated. Start clean instead -- it also drops files left
+  # behind by an older stub release.
+  if [[ -d "$dest" ]]; then
+    info "Removing previous stubs"
+    rm -rf "$dest" || die "could not remove $dest -- delete it by hand and re-run"
+  fi
+
+  info "Installing $STUBS_PACKAGE -> typings/"
+  # --target keeps the stubs local to the repo, so resolution doesn't depend on
+  # which interpreter or virtualenv happens to be active.
+  # pyrightconfig.json points stubPath here.
+  "$py" -m pip install --quiet --target "$dest" --no-user "$STUBS_PACKAGE" ||
+    die "pip install failed"
+
+  if [[ -f "$dest/machine.pyi" ]]; then
+    ok "stubs installed ($(find "$dest" -name '*.pyi' | wc -l | tr -d ' ') .pyi files)"
+    info "Reload the VS Code window to pick them up (Cmd/Ctrl+Shift+P -> Developer: Reload Window)"
+  else
+    die "install completed but $dest/machine.pyi is missing"
+  fi
+}
+
 cmd_doctor() {
   local rc=0 have_mpremote=0
   printf 'Robox Pico toolchain check\n\n'
@@ -378,10 +415,17 @@ cmd_doctor() {
     warn "code CLI        not on PATH (VS Code: 'Shell Command: Install code command in PATH')"
   fi
 
-  if [[ -d "$REPO_ROOT/.vscode/Pico-W-Stub" ]]; then
-    ok "stubs           .vscode/Pico-W-Stub present"
+  if [[ -f "$REPO_ROOT/typings/machine.pyi" ]]; then
+    ok "stubs           typings/ present ($(find "$REPO_ROOT/typings" -name '*.pyi' 2>/dev/null | wc -l | tr -d ' ') .pyi files)"
   else
-    warn "stubs           missing -> run 'MicroPico > Configure project' in VS Code"
+    warn "stubs           missing -> ./tools/pico stubs   (Pylance will flag machine/utime/etc.)"
+    rc=1
+  fi
+
+  if [[ -f "$REPO_ROOT/pyrightconfig.json" ]]; then
+    ok "pyrightconfig   present"
+  else
+    warn "pyrightconfig   missing -> type checking will use defaults and be noisy"
   fi
 
   if [[ $have_mpremote -eq 1 ]]; then
@@ -397,7 +441,8 @@ usage() {
   cat <<'EOF'
 tools/pico -- Thonny-replacement CLI for the Robox Pico firmware.
 
-  pico doctor                 check that mpremote / picotool / MicroPico exist
+  pico doctor                 check that mpremote / picotool / stubs exist
+  pico stubs                  install MicroPython type stubs into typings/
   pico devs                   list serial ports
   pico repl                   open the MicroPython REPL (Ctrl-] quits)
   pico stop                   interrupt the running program (Ctrl-C)
@@ -436,6 +481,7 @@ main() {
   case "$sub" in
     help | -h | --help) usage; return 0 ;;
     doctor)             cmd_doctor "$@"; return $? ;;
+    stubs)              cmd_stubs "$@"; return $? ;;
     uf2 | save)         cmd_uf2 "$@"; return $? ;;
     flash | load)       cmd_flash "$@"; return $? ;;
   esac

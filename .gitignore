@@ -5,8 +5,11 @@
 __pycache__/
 *.pyc
 
-# MicroPico downloads its bundled MicroPython stubs here on
-# "MicroPico > Configure project". Regenerable and large, so not committed.
+# MicroPython type stubs for Pylance, installed by `./tools/pico stubs`.
+# ~1.3 MB of regenerable .pyi files, so not committed.
+typings/
+
+# Left over from the old extension-managed stub layout; safe to delete.
 .vscode/Pico-W-Stub/
 
 # UF2 artifacts produced by `./tools/pico uf2` / the "UF2: Build release" task.

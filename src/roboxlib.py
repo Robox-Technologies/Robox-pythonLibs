@@ -5,7 +5,7 @@
 #
 # Ro/Box library to interface with other components.
 # All code is written by Yuma Soerianto and Sebastien Taylor!
-# Copyright (c) 2023-2026 Yuma Soerianto and Sebastien Taylor
+# Copyright (c) 2023-2026 Robox Technologies Pty Ltd
 #
 
 from machine import Pin, PWM, time_pulse_us, I2C
@@ -245,7 +245,8 @@ class ColorSensor:
 
     def gain(self, value):
         if value is None:
-            return _GAINS[self._register8(_REGISTER_CONTROL)]
+            # & 0b11 preserves only the two LSBs
+            return _GAINS[self._register8(_REGISTER_CONTROL) & 0b11]
         if value not in _GAINS:
             raise ValueError("gain must be 1, 4, 16 or 60")
         return self._register8(_REGISTER_CONTROL, _GAINS.index(value))

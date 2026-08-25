@@ -224,7 +224,9 @@ class BluetoothCommunuication(CommunicationInterface):
         response = b""
 
         while self.uart.any():
-            response += self.uart.read()
+            chunk = self.uart.read()
+            if chunk:
+                response += chunk
 
         try:
             decoded = response.decode().strip()

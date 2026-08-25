@@ -7,8 +7,11 @@
 # .vscode/tasks.json via tools/pico.
 mpremote>=1.24.0
 
-# Type stubs so Pylance understands `machine`, `_thread`, `ustruct`, `utime`.
-# Optional: the MicroPico extension ships its own copy into
-# .vscode/Pico-W-Stub. Install these if you want stubs without the extension,
-# then add the site-packages path to python.analysis.extraPaths.
-micropython-rp2-rpi_pico-stubs>=1.24.0
+# NOTE: the MicroPython type stubs are NOT listed here on purpose.
+# They must land in ./typings (where pyrightconfig.json points stubPath), not
+# in site-packages, so they are installed with --target instead:
+#
+#   ./tools/pico stubs
+#
+# Board target is the plain RP2040 Pico: micropython-rp2-rpi_pico-stubs.
+# A Pico W would need micropython-rp2-rpi_pico_w-stubs.

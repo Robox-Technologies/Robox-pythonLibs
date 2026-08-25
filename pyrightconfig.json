@@ -1,0 +1,67 @@
+{
+  // Type-checking config for Pylance / pyright.
+  //
+  // This file is the single source of truth. When pyrightconfig.json exists,
+  // Pylance IGNORES the python.analysis.* keys in .vscode/settings.json --
+  // which is deliberate, because MicroPico's "Configure project" command
+  // rewrites those keys and would otherwise clobber this setup.
+  //
+  // Check your changes from a terminal with:  npx pyright
+
+  "include": ["src", "template_program.py"],
+
+  "exclude": ["typings", "build", "**/__pycache__"],
+
+  // picozero is a vendored third-party dependency. Still importable, we just
+  // don't report its type errors as though they were ours (that alone was
+  // 60-odd of the errors you were seeing).
+  "ignore": ["src/lib"],
+
+  // MicroPython stubs for the RP2040 -- the regular Pico, no wifi.
+  // Populated by `./tools/pico stubs`. Gitignored; regenerate, don't commit.
+  "stubPath": "typings",
+
+  // Everything in src/ is uploaded to the Pico's ROOT, so `import roboxlib`
+  // has to resolve as a top-level module here too. src/lib is the board's /lib.
+  "extraPaths": ["src", "src/lib"],
+
+  // "basic" is the right level for firmware; "strict" fights the MicroPython
+  // stubs constantly.
+  "typeCheckingMode": "basic",
+
+  // MicroPython 1.x tracks a CPython 3.4-3.11 syntax subset.
+  "pythonVersion": "3.11",
+
+  // ---------------------------------------------------------------------
+  // Diagnostics tuned for MicroPython firmware
+  // ---------------------------------------------------------------------
+
+  // machine, utime, ustruct, _thread and friends are stub-only: they exist on
+  // the board and never on the host. Without this you get an error on almost
+  // every import line in the project.
+  "reportMissingModuleSource": "none",
+
+  // MicroPython driver methods commonly double as read AND write
+  // (`def reg(self, value=None)`), so they implicitly return None on the write
+  // path and pyright types every read result as `X | None`. The firmware only
+  // ever calls the read form. Typing artifacts, not bugs.
+  "reportOptionalMemberAccess": "none",
+  "reportOptionalOperand": "none",
+  "reportOptionalSubscript": "none",
+  "reportOptionalIterable": "none",
+  "reportOptionalCall": "none",
+  "reportOptionalContextManager": "none",
+
+  // communication.py's `configure(bt)` is called with the instance as its
+  // first argument, so `bt` *is* self under another name.
+  "reportSelfClsParameterName": "none",
+
+  // Deliberately left ON, because these catch real mistakes rather than
+  // MicroPython typing noise: reportAttributeAccessIssue (e.g. Pin.hgih()),
+  // reportUndefinedVariable, reportOperatorIssue, reportCallIssue,
+  // reportArgumentType, reportIndexIssue.
+  //
+  // Three of those currently fire -- see the "Remaining diagnostics" section
+  // of docs/VSCODE.md. One is a genuine latent None dereference.
+  "reportUnusedExpression": "none"
+}

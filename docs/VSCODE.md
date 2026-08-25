@@ -38,32 +38,36 @@ code --install-extension paulober.pico-w-go
 code --install-extension ms-python.python
 ```
 
+> **On the "pico-w" in that ID:** the extension used to be called Pico-W-Go and
+> still ships under that marketplace ID, and still names its stub folder
+> `Pico-W-Stub`. It is not Pico W specific and works fine with a plain Pico.
+> This repo doesn't use its stub folder at all (see step 3), so the misleading
+> name doesn't appear anywhere in the config.
+
 `.vscode/extensions.json` also marks **Pymakr** as unwanted. Don't run both —
 they fight over the serial port.
 
-### 3. Generate the MicroPython stubs
-
-Command Palette (`Cmd/Ctrl+Shift+P`) → **MicroPico > Configure project**.
-
-This creates `.vscode/Pico-W-Stub` — a link to the RP2040 stubs package the
-extension installs — which `.vscode/settings.json` already points Pylance at.
-Without it, `from machine import Pin` shows as an unresolved import (harmless,
-but noisy). The link is gitignored since it's machine-specific.
-
-Two caveats:
-
-- The command **rewrites the `python.analysis.*` keys** in
-  `.vscode/settings.json` and will strip the comments there. It writes the same
-  values that are already committed, so this is cosmetic — but don't be
-  surprised by the diff.
-- On Windows it creates a symlink, which needs Developer Mode enabled.
-
-If you'd rather not use the extension for stubs, install them from PyPI instead
-and point `python.analysis.extraPaths` at the package:
+### 3. Install the MicroPython stubs
 
 ```bash
-python3 -m pip install --user micropython-rp2-rpi_pico-stubs
+./tools/pico stubs        # or the "Pico: Install type stubs" task
 ```
+
+Then reload the window (`Cmd/Ctrl+Shift+P` → *Developer: Reload Window*).
+
+This installs `micropython-rp2-rpi_pico-stubs` — the **plain RP2040 Pico**
+package, not the Pico W one — into `typings/`, where `pyrightconfig.json` points
+`stubPath`. Without it, Pylance can't see `machine`, `utime`, `ustruct`,
+`micropython` or `_thread`, and you get an error on nearly every import line.
+
+`typings/` is gitignored (~1.3 MB of regenerable `.pyi` files), so re-run this
+after a fresh clone.
+
+> Deliberately **not** using MicroPico's *Configure project* command for this.
+> It creates a machine-specific symlink (needing Developer Mode on Windows) and
+> rewrites the `python.analysis.*` keys in `.vscode/settings.json`. Keeping the
+> stubs local and the config in `pyrightconfig.json` means nothing can clobber
+> it — and `npx pyright` reproduces exactly what the editor sees.
 
 ### 4. Confirm the toolchain
 
@@ -71,8 +75,19 @@ python3 -m pip install --user micropython-rp2-rpi_pico-stubs
 ./tools/pico doctor
 ```
 
-You should see `ok` for mpremote and, if you plan to build UF2s, picotool.
-Plug in the Pico and run `./tools/pico devs` — it should list one port.
+You should see `ok` for mpremote, the stubs and pyrightconfig — and, if you plan
+to build UF2s, picotool. Plug in the Pico and run `./tools/pico devs`; it should
+list one port.
+
+Confirm type checking is healthy too:
+
+```bash
+npx pyright        # or the "Pico: Type-check project" task
+```
+
+Expect **3 errors, 0 warnings** — see [Remaining diagnostics](#remaining-diagnostics).
+Anything more than that (especially unresolved imports) means step 3 didn't
+take.
 
 You can also check what an upload *would* do without any board attached:
 
@@ -210,6 +225,49 @@ board, hold BOOTSEL while plugging it in, then:
 
 ---
 
+## Type checking
+
+`pyrightconfig.json` at the repo root is the single source of truth for
+IntelliSense and type checking — Pylance reads it and ignores
+`python.analysis.*` in `.vscode/settings.json` while it exists. Reproduce
+exactly what the editor sees with:
+
+```bash
+npx pyright
+```
+
+Three things it sets up that matter:
+
+- **`stubPath: "typings"`** — MicroPython stubs for `machine`, `utime`,
+  `ustruct`, `micropython`, `_thread`.
+- **`extraPaths: ["src", "src/lib"]`** — everything in `src/` is uploaded to the
+  Pico's *root*, so `import roboxlib` has to resolve as a top-level module on
+  the host too. `src/lib` mirrors the board's `/lib`.
+- **`ignore: ["src/lib"]`** — picozero is a vendored dependency. Still
+  importable, but its type errors aren't reported as ours. That alone accounted
+  for about 60 of the errors.
+
+The `reportOptional*` family is switched off, which needs justifying: MicroPython
+drivers routinely use one method for both read and write —
+
+```python
+def _register8(self, register, value=None):
+    if value is None:
+        return self.i2c.readfrom_mem(self.address, register, 1)[0]   # returns int
+    self.i2c.writeto_mem(self.address, register, ustruct.pack('<B', value))
+    # implicit `return None` on the write path
+```
+
+so pyright types *every* read as `int | None` and flags every subsequent
+`enable | _ENABLE_PON`. The firmware only ever calls the read form there. Those
+are typing artifacts, not defects.
+
+Rules that catch real mistakes — `reportAttributeAccessIssue`,
+`reportUndefinedVariable`, `reportOperatorIssue`, `reportCallIssue`,
+`reportArgumentType`, `reportIndexIssue` — are left **on**.
+
+---
+
 ## Troubleshooting
 
 **"no device found" / "could not open port"**
@@ -242,9 +300,20 @@ Set `"micropico.autoConnect": false` and `"micropico.manualComDevice"` in
 export PICO_PORT=/dev/cu.usbmodem1101   # find it with ./tools/pico devs
 ```
 
-**Pylance flags `machine`, `_thread`, `ustruct`, `utime`**
-`.vscode/Pico-W-Stub` is missing — run **MicroPico > Configure project** (setup
-step 3). `./tools/pico doctor` reports whether it's there.
+**Pylance flags `machine`, `_thread`, `ustruct`, `utime`, `micropython`**
+The stubs aren't installed. Run `./tools/pico stubs`, then reload the window.
+`./tools/pico doctor` tells you whether `typings/` is populated.
+
+**Suddenly *everything* is unresolved, including `json`, `sys` and `os`**
+Something has pointed `typeshedPath`/`python.analysis.typeshedPaths` at a
+directory that doesn't exist, which takes the stdlib down with it. Don't use
+`typeshedPath` for MicroPython stubs — `stubPath` is the right setting, and
+that's what `pyrightconfig.json` uses.
+
+**Pylance ignores my `python.analysis.*` edits in `.vscode/settings.json`**
+Working as intended: `pyrightconfig.json` exists, so it wins. Edit that file
+instead. This is also why running MicroPico's *Configure project* can't break
+the setup.
 
 **`picotool save` says "no accessible RP2040 devices"**
 The board isn't in BOOTSEL mode. Run `UF2: Reboot board into BOOTSEL`, or unplug
@@ -264,19 +333,25 @@ copy into a single `mpremote` invocation so that cost is paid once. MicroPico's
 
 ```
 .micropico                 marker file; activates the MicroPico extension
-.vscode/settings.json      MicroPico config + Pylance MicroPython stub paths
+.vscode/settings.json      MicroPico config + editor conventions
 .vscode/extensions.json    recommended (and unwanted) extensions
 .vscode/tasks.json         every Pico/UF2 command as a runnable task
+pyrightconfig.json         IntelliSense + type-checking config (authoritative)
+typings/                   MicroPython stubs (gitignored; ./tools/pico stubs)
 tools/pico                 mpremote/picotool wrapper backing all the tasks
-requirements-dev.txt       host-side Python deps (mpremote, stubs)
+requirements-dev.txt        host-side Python deps (mpremote)
 build/                     UF2 output (gitignored)
 ```
 
 Nothing in `src/` was changed — the firmware is untouched.
 
-`.vscode/Pico-W-Stub` and `build/*` are gitignored (machine-specific and
-regenerable); everything else above is committed, so a fresh clone is one
-`./tools/pico doctor` away from working.
+`typings/` and `build/*` are gitignored (regenerable); everything else above is
+committed, so a fresh clone needs exactly two commands:
+
+```bash
+python3 -m pip install --user -r requirements-dev.txt
+./tools/pico stubs
+```
 
 Note the two files whose upload rules are defined in *two* places, and keep them
 in step if you change one:
@@ -285,6 +360,8 @@ in step if you change one:
 | --- | --- | --- |
 | what gets uploaded | `micropico.syncFolder` + `syncFileTypes` | `SYNC_DIR` |
 | what gets skipped | `micropico.pyIgnore` (paths relative to `src/`) | `EXCLUDES` in `tools/pico` |
+
+(Type checking has no such split — `pyrightconfig.json` is the only place.)
 
 Both are currently set to upload all of `src/` except `.DS_Store`,
 `__pycache__`, and `lib/picozero-0.4.2.dist-info/`.

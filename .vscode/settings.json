@@ -1,11 +1,14 @@
 {
   // ---------------------------------------------------------------------
-  // MicroPico (paulober.pico-w-go) -- the Thonny replacement
+  // MicroPico -- the Thonny replacement
   //
-  // NB: running "MicroPico > Configure project" rewrites the
-  // python.analysis.* keys below and will strip these comments. The values
-  // it writes are the same ones already set here, so you only need to run
-  // it once to fetch the stubs.
+  // The extension's marketplace ID is still "paulober.pico-w-go" and it calls
+  // its stub folder "Pico-W-Stub", but that is only legacy naming from when it
+  // was called Pico-W-Go. It supports the plain Pico fine, and this repo does
+  // not use its stub folder at all -- see pyrightconfig.json.
+  //
+  // NB: "MicroPico > Configure project" will add python.analysis.* keys to
+  // this file. Harmless: pyrightconfig.json takes precedence over them.
   // ---------------------------------------------------------------------
 
   // "Upload project" pushes the contents of src/ to the Pico's root, so
@@ -47,33 +50,20 @@
   "micropico.softResetAfterUpload": true,
 
   // ---------------------------------------------------------------------
-  // Python analysis -- teach Pylance about MicroPython
+  // Python analysis
+  //
+  // Type-checking config lives in pyrightconfig.json at the repo root, NOT
+  // here. Pylance ignores python.analysis.* whenever pyrightconfig.json
+  // exists, so putting it there keeps one source of truth and survives
+  // MicroPico's "Configure project" command rewriting this file.
   // ---------------------------------------------------------------------
-
-  // `machine`, `_thread`, `ustruct`, `utime` etc. only exist on the board.
-  // "MicroPico > Configure project" creates .vscode/Pico-W-Stub as a link to
-  // the installed micropython-rp2 stubs package. Point at that directory
-  // itself -- there is no typings/ or stubs/ subfolder in the current layout.
-  // Note typeshedPaths only honours its FIRST entry.
   "python.languageServer": "Pylance",
-  "python.analysis.typeshedPaths": [".vscode/Pico-W-Stub"],
-  "python.analysis.extraPaths": [".vscode/Pico-W-Stub", "src", "src/lib"],
-  "python.analysis.typeCheckingMode": "basic",
-  "python.analysis.diagnosticSeverityOverrides": {
-    // Stub-only modules have no local runtime source; that is expected.
-    "reportMissingModuleSource": "none",
-    // MicroPython stubs are loose about Optional returns (e.g. I2C reads).
-    "reportOptionalMemberAccess": "none",
-    "reportOptionalSubscript": "none",
-    // picozero and the firmware both use non-standard self/cls names.
-    "reportSelfClsParameterName": "none",
-    // main.py builds its sandbox namespace dynamically for exec().
-    "reportUnusedExpression": "none"
-  },
 
-  // MicroPython 1.x tracks a CPython 3.4-3.11 syntax subset. Don't suggest
-  // 3.12+ constructs that won't run on hardware.
-  "python.analysis.pythonVersion": "3.11",
+  // pyrightconfig.json uses // comments, which pyright accepts but VS Code's
+  // plain-JSON validator would flag.
+  "files.associations": {
+    "pyrightconfig.json": "jsonc"
+  },
 
   // ---------------------------------------------------------------------
   // Editor conventions for firmware files
@@ -81,10 +71,10 @@
   "files.eol": "\n",
   "files.insertFinalNewline": true,
 
-  // Deliberately OFF. The existing firmware files carry a lot of trailing
-  // whitespace, so trimming on save rewrites whole files and buries real
-  // changes in whitespace noise. Turn it on once the tree has been cleaned up
-  // in a single dedicated commit.
+  // ON. Note the existing firmware files carry a lot of trailing whitespace,
+  // so the first save of an untouched file will rewrite the whole thing. Worth
+  // landing that churn as one dedicated whitespace-only commit so it doesn't
+  // bury real changes in later diffs.
   "files.trimTrailingWhitespace": true,
   "files.exclude": {
     "**/__pycache__": true,
@@ -101,11 +91,11 @@
 
   // Keep the generated stub folder out of search results and file watching.
   "search.exclude": {
-    ".vscode/Pico-W-Stub": true,
+    "typings": true,
     "build": true
   },
   "files.watcherExclude": {
-    "**/.vscode/Pico-W-Stub/**": true
+    "**/typings/**": true
   },
 
   // The tasks below all assume a terminal rooted at the repo.
