@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+#
+# tools/comm-bench -- communication reliability benchmark / eval harness.
+#
+#   ./tools/comm-bench --transport usb --out docs/comm-baseline-usb.json
+#   ./tools/comm-bench --transport ble --out docs/comm-baseline-ble.json
+#   ./tools/comm-bench --corpus tiny            # one case, fast smoke test
+#
+# The harness only ever uploads and reads back. It never sends START_PROGRAM,
+# so it cannot make the robot move.
+set -euo pipefail
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+# PYTHONPATH rather than `cd`, so a relative --out resolves against the
+# directory the user actually ran this from.
+export PYTHONPATH="$REPO_ROOT/tools${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m bench "$@"
