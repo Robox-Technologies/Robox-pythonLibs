@@ -10,6 +10,7 @@ Run with: ./tools/run-tests
 import json
 import os
 import sys
+import threading
 import time
 import types
 import unittest
@@ -132,12 +133,20 @@ def sent_bytes(comm):
 
 
 def replies(comm):
-    """The device messages an interface has emitted, decoded."""
+    """The device messages an interface has emitted, decoded.
+
+    Fed in chunks, as a link delivers them. The reader caps its buffer at 4KB
+    and resyncs past an overflow, so handing it a long stream in one go quietly
+    discards most of it.
+    """
     out = []
-    frames, _ = p.FrameReader().feed(sent_bytes(comm))
-    for frame in frames:
-        if frame.kind == p.KIND_REPLY:
-            out.append(json.loads(frame.text()))
+    reader = p.FrameReader()
+    raw = sent_bytes(comm)
+    for offset in range(0, len(raw), 512):
+        frames, _ = reader.feed(raw[offset:offset + 512])
+        for frame in frames:
+            if frame.kind == p.KIND_REPLY:
+                out.append(json.loads(frame.text()))
     return out
 
 
@@ -339,6 +348,137 @@ class TestCommandGating(unittest.TestCase):
         ns["poll"](ble)
 
         self.assertEqual(ns["machine"].resets, 0)
+
+
+class TestOutgoingOrder(unittest.TestCase):
+    """Console output has to reach the terminal in the order it was printed."""
+
+    def test_pacing_gate_does_not_let_a_later_message_overtake(self):
+        """A clock tick part-way down the queue must not reorder one interface.
+
+        `can_send_now` is a comparison against the clock, so asking it once per
+        queue entry meant a scan that straddled `next_send_time` judged the
+        oldest entry not ready and a later one ready, and sent that first. The
+        clock here advances a millisecond per call, which is what a scan
+        preempted by the user program's thread looks like on the board.
+        """
+        ns = load_firmware()
+        ble, comms = ns["ble"], ns["communication"]
+
+        for number in range(1, 21):
+            ble.write_message("console", str(number))
+
+        calls = [0]
+
+        def creeping_ticks_ms():
+            calls[0] += 1
+            return calls[0]
+
+        comms.time.ticks_ms = creeping_ticks_ms
+        # Not ready until several entries into the scan.
+        ble.next_send_time = 5
+
+        for _ in range(40):
+            if not comms.flush_outgoing_messages():
+                ble.next_send_time = calls[0]
+                comms.flush_outgoing_messages()
+
+        sent = [
+            int(reply["message"])
+            for reply in replies(ble)
+            if reply["type"] == "console"
+        ]
+        self.assertEqual(sent, list(range(1, 21)))
+
+    def test_a_stalled_interface_does_not_hold_up_a_ready_one(self):
+        """Blocking is per interface, not global: USB still drains."""
+        ns = load_firmware()
+        ble, usb, comms = ns["ble"], ns["usb"], ns["communication"]
+
+        # Startup queues a "connect" for Bluetooth; this is about what follows.
+        del comms.outgoing_messages[:]
+
+        ble.next_send_time = comms.time.ticks_add(comms.time.ticks_ms(), 10000)
+        ble.write_message("console", "bluetooth")
+        usb.write_message("console", "usb")
+
+        self.assertTrue(comms.flush_outgoing_messages())
+        self.assertEqual(
+            [r["message"] for r in replies(usb) if r["type"] == "console"],
+            ["usb"],
+        )
+        self.assertEqual(comms.queued_message_count(), 1)
+
+
+class TestOutgoingLoss(unittest.TestCase):
+    """Printing faster than the link carries must not lose lines."""
+
+    def test_a_hundred_prints_all_arrive_in_order(self):
+        """The queue holds 64. A tight print loop used to lose the rest."""
+        ns = load_firmware()
+        usb, comms = ns["usb"], ns["communication"]
+        del comms.outgoing_messages[:]
+
+        def program():
+            for number in range(1, 101):
+                usb.write_message("console", str(number))
+
+        worker = threading.Thread(target=program)
+        worker.start()
+
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if comms.flush_outgoing_messages():
+                continue
+            if not worker.is_alive() and not comms.queued_message_count():
+                break
+            time.sleep(0.001)
+        worker.join(timeout=5)
+
+        self.assertEqual(
+            [r["message"] for r in replies(usb) if r["type"] == "console"],
+            [str(number) for number in range(1, 101)],
+        )
+        self.assertEqual(comms.dropped_message_count, 0)
+
+    def test_the_draining_thread_never_waits_for_room(self):
+        """The main loop cannot wait on a queue only it can empty."""
+        ns = load_firmware()
+        usb, comms = ns["usb"], ns["communication"]
+        del comms.outgoing_messages[:]
+        # Long enough that waiting would look like a hang, not a slow test.
+        comms.QUEUE_WAIT_MS = 60000
+
+        for number in range(comms.MAX_QUEUED_MESSAGES + 1):
+            usb.write_message("console", str(number))
+
+        self.assertEqual(
+            comms.queued_message_count(), comms.MAX_QUEUED_MESSAGES
+        )
+
+    def test_a_drop_is_announced_where_the_gap_is(self):
+        """When the link really is dead, the loss is marked, not silent."""
+        ns = load_firmware()
+        usb, comms = ns["usb"], ns["communication"]
+        del comms.outgoing_messages[:]
+
+        overrun = 3
+        for number in range(1, comms.MAX_QUEUED_MESSAGES + overrun + 1):
+            usb.write_message("console", str(number))
+
+        drain(ns)
+
+        sent = [r["message"] for r in replies(usb) if r["type"] == "console"]
+        self.assertEqual(sent[0], comms.DROP_NOTICE % overrun)
+        self.assertEqual(
+            sent[1:],
+            [
+                str(number)
+                for number in range(
+                    overrun + 1, comms.MAX_QUEUED_MESSAGES + overrun + 1
+                )
+            ],
+        )
 
 
 if __name__ == "__main__":

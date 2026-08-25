@@ -27,9 +27,23 @@ SEND_HEADROOM = 1.4
 # roughly three messages a second regardless of size.
 MIN_SEND_INTERVAL_MS = 15
 
-# Unbounded growth on a 264KB device is a crash. Drop oldest when a program
-# prints faster than the link drains.
+# Unbounded growth on a 264KB device is a crash, so the queue is bounded and a
+# program that outruns the link waits for room rather than having its output
+# thrown away. See queue_outgoing_message.
 MAX_QUEUED_MESSAGES = 64
+
+# How long a printing program waits for room before giving up and dropping.
+# The link is the real limit, not the queue: a full queue is a couple of
+# seconds of BLE, so this is comfortably longer than a drain while still
+# bounded, because a link that has gone away never drains at all.
+QUEUE_WAIT_MS = 2000
+
+# Poll interval while waiting. Short enough to be invisible, long enough to
+# leave the draining core the GIL.
+QUEUE_POLL_MS = 2
+
+# Shown in the terminal where output was lost, so a gap is never silent.
+DROP_NOTICE = "[%d line(s) of output dropped: the link could not keep up]"
 
 # Cap on a partial line waiting for its newline. The module's own chatter has
 # no terminator, so without this it accumulates for the life of the session.
@@ -48,16 +62,57 @@ queue_lock = _thread.allocate_lock()
 # Dropped to keep the queue bounded, counted so the loss is reportable.
 dropped_message_count = 0
 
+# Drops not yet announced on the interface they happened on, so the gap can be
+# marked in the terminal at the point where it happened.
+unreported_drops = {}
+
+# The thread that runs flush_outgoing_messages, recorded at import because that
+# happens on the main loop's thread. Waiting for the queue to drain is only
+# safe for a thread that is not the one doing the draining: the main loop
+# waiting on itself is a deadlock until the timeout fires.
+draining_thread = _thread.get_ident()
+
 
 def queue_outgoing_message(comm, message_type, content):
+    """Queue one device message, waiting for room if the link is behind.
+
+    Waiting is what keeps output whole. A program printing in a tight loop
+    fills the queue in milliseconds while the link needs seconds to carry it,
+    and discarding the overflow silently lost more than a third of a hundred
+    printed lines. The user program has its own core, and the main loop keeps
+    draining while it sleeps, so the cost of waiting is that a chatty program
+    runs at the speed of its own output.
+
+    Bounded, and only ever on the program's thread. A link that has gone away
+    never drains, so past QUEUE_WAIT_MS the oldest entry is dropped as before
+    and recorded for a marker rather than vanishing.
+    """
     global dropped_message_count
+
+    if _thread.get_ident() != draining_thread:
+        deadline = time.ticks_add(time.ticks_ms(), QUEUE_WAIT_MS)
+        while _queue_is_full():
+            if time.ticks_diff(time.ticks_ms(), deadline) >= 0:
+                break
+            time.sleep(QUEUE_POLL_MS / 1000)
 
     queue_lock.acquire()
     try:
         if len(outgoing_messages) >= MAX_QUEUED_MESSAGES:
-            outgoing_messages.pop(0)
+            victim = outgoing_messages.pop(0)
             dropped_message_count += 1
+            unreported_drops[victim[0]] = (
+                unreported_drops.get(victim[0], 0) + 1
+            )
         outgoing_messages.append((comm, message_type, content))
+    finally:
+        queue_lock.release()
+
+
+def _queue_is_full():
+    queue_lock.acquire()
+    try:
+        return len(outgoing_messages) >= MAX_QUEUED_MESSAGES
     finally:
         queue_lock.release()
 
@@ -74,13 +129,33 @@ def flush_outgoing_messages():
 
     queue_lock.acquire()
     try:
+        # An interface that is not ready blocks its own backlog, and is asked
+        # once per flush rather than once per entry. `can_send_now` compares
+        # against the clock, so asking per entry let the clock cross
+        # `next_send_time` part-way down the queue: the oldest entry was judged
+        # not ready, a later entry for the *same* interface was, and it went
+        # out in front. That is how console output arrived shuffled.
+        blocked = []
         for index in range(len(outgoing_messages)):
             comm = outgoing_messages[index][0]
-            # BLE paces itself; skip while draining and try the next entry,
-            # which may belong to a ready interface.
-            if hasattr(comm, "can_send_now") and not comm.can_send_now():
+            if comm in blocked:
                 continue
-            pending = outgoing_messages.pop(index)
+            # BLE paces itself; skip while draining and try the next entry,
+            # which may belong to a *different*, ready interface.
+            if hasattr(comm, "can_send_now") and not comm.can_send_now():
+                blocked.append(comm)
+                continue
+            # Everything dropped for this interface was older than everything
+            # still queued for it, so the gap belongs here, in front of the
+            # survivors. Sent in place of a real message rather than as well as
+            # one, so a flush is still one write and the marker costs no queue
+            # space of its own.
+            missing = unreported_drops.get(comm)
+            if missing:
+                unreported_drops[comm] = 0
+                pending = (comm, "console", DROP_NOTICE % missing)
+            else:
+                pending = outgoing_messages.pop(index)
             break
     finally:
         queue_lock.release()
@@ -133,7 +208,8 @@ class CommunicationInterface:
     def write_message(self, message_type, content):
         """
         Public API used everywhere else.
-        Thread-safe and non-blocking.
+        Thread-safe. Never blocks the main loop; a user program that prints
+        faster than the link carries waits for room instead of losing output.
         """
         queue_outgoing_message(self, message_type, content)
 
