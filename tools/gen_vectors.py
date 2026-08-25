@@ -46,6 +46,8 @@ PROGRAM_CASES = [
     ("single", "print('hi')\n"),
     ("crlf", "a = 1\r\nb = 2\r\n"),
     ("blank_lines", "a = 1\n\n\nb = 2\n"),
+    ("leading_blank", "\n\na = 1\n"),
+    ("no_trailing_newline", "a = 1\nb = 2"),
     ("trailing_space", "x = 'a  '  \n"),
     ("tab_indent", "if True:\n\tprint('tab')\n"),
     ("unicode", "# café naïve 你好\nprint('✓')\n"),

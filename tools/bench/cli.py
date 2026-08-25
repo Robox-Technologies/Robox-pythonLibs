@@ -12,16 +12,13 @@ import datetime
 import json
 import sys
 
-from . import corpus, legacy, report as report_module, runner, transports
+from . import corpus, report as report_module, runner, transports
 
 
 def build_parser():
     parser = argparse.ArgumentParser(prog="bench", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--transport", choices=("usb", "ble"), default="usb")
-    parser.add_argument("--protocol", choices=("legacy", "v2"), default="legacy",
-                        help="legacy is the unframed path; v2 is framed with "
-                             "sequence numbers and checksums")
     parser.add_argument("--corpus", action="append", default=None,
                         help="run only this corpus (repeatable); default is all")
     parser.add_argument("--repeat", type=int, default=1,
@@ -29,6 +26,12 @@ def build_parser():
     parser.add_argument("--port", default=None, help="serial port (default: auto)")
     parser.add_argument("--ble-address", default=None, help="skip the BLE scan")
     parser.add_argument("--ack-timeout", type=float, default=10.0)
+    parser.add_argument(
+        "--chunk-delay-ms", type=float, default=None,
+        help="pause between BLE chunk writes. Defaults to the website's 40ms. "
+             "The credit window bounds what the *board* buffers, but the HM-10 "
+             "in between drains at only 9600 baud and has its own small buffer, "
+             "so sweep this to find where integrity actually breaks.")
     parser.add_argument("--out", default=None, help="write the JSON report here")
     parser.add_argument("--no-reset", action="store_true",
                         help="do not hard-reset the board before each case")
@@ -88,7 +91,7 @@ def main(argv=None):
                     text,
                     port=args.port,
                     ack_timeout=args.ack_timeout,
-                    protocol=args.protocol,
+                    chunk_delay_ms=args.chunk_delay_ms,
                 )
             finally:
                 transport.close()
@@ -115,13 +118,18 @@ def main(argv=None):
 
     output = {
         "meta": {
-            "protocol": args.protocol,
+            "protocol": "framed",
             "transport": args.transport,
             "firmware": version,
             "started": started,
             "repeat": args.repeat,
             "chunk_size": transports.BLE_CHUNK_SIZE if args.transport == "ble" else None,
-            "write_delay_s": transports.BLE_WRITE_TIMEOUT_S if args.transport == "ble" else None,
+            "write_delay_s": (
+                (args.chunk_delay_ms / 1000.0
+                 if args.chunk_delay_ms is not None
+                 else transports.BLE_WRITE_TIMEOUT_S)
+                if args.transport == "ble" else None
+            ),
         },
         "results": results,
         "summary": runner.summarise(results),

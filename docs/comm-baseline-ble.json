@@ -1,0 +1,366 @@
+{
+  "meta": {
+    "chunk_size": 20,
+    "firmware": "1.1.0",
+    "protocol": "legacy",
+    "repeat": 1,
+    "started": "2026-08-25T14:37:20",
+    "transport": "ble",
+    "write_delay_s": 0.04
+  },
+  "results": [
+    {
+      "ack_received": true,
+      "ack_seconds": 0.1073,
+      "bytes_written": 60,
+      "chunks": 4,
+      "corpus": "tiny",
+      "device_messages": [
+        {
+          "message": "",
+          "type": "download"
+        }
+      ],
+      "errors": [],
+      "grade": {
+        "actual_bytes": 34,
+        "actual_lines": 3,
+        "actual_sha": "90456f3bcc9c29b1",
+        "byte_accuracy": 1.0,
+        "corrupt_lines_still_valid_python": 0,
+        "exact_match": true,
+        "expected_bytes": 34,
+        "expected_lines": 3,
+        "expected_sha": "90456f3bcc9c29b1",
+        "first_divergence_offset": null,
+        "lines_corrupted": 0,
+        "lines_extra": 0,
+        "lines_missing": 0,
+        "readback_failed": false
+      },
+      "iteration": 0,
+      "local_write_seconds": 0.1773,
+      "protocol": "legacy",
+      "protocol_events": [],
+      "protocol_loss_bytes": -1,
+      "sent_bytes": 33,
+      "throughput_bytes_per_second": 210.7,
+      "total_seconds": 0.2847,
+      "transport": "ble",
+      "writes": 4
+    },
+    {
+      "ack_received": true,
+      "ack_seconds": 0.0636,
+      "bytes_written": 691,
+      "chunks": 36,
+      "corpus": "typical",
+      "device_messages": [
+        {
+          "message": "",
+          "type": "download"
+        }
+      ],
+      "errors": [],
+      "grade": {
+        "actual_bytes": 661,
+        "actual_lines": 22,
+        "actual_sha": "d92cacb6eec038c0",
+        "byte_accuracy": 1.0,
+        "corrupt_lines_still_valid_python": 0,
+        "exact_match": true,
+        "expected_bytes": 661,
+        "expected_lines": 22,
+        "expected_sha": "d92cacb6eec038c0",
+        "first_divergence_offset": null,
+        "lines_corrupted": 0,
+        "lines_extra": 0,
+        "lines_missing": 0,
+        "readback_failed": false
+      },
+      "iteration": 0,
+      "local_write_seconds": 1.6082,
+      "protocol": "legacy",
+      "protocol_events": [],
+      "protocol_loss_bytes": 3,
+      "sent_bytes": 664,
+      "throughput_bytes_per_second": 413.4,
+      "total_seconds": 1.6717,
+      "transport": "ble",
+      "writes": 36
+    },
+    {
+      "ack_received": true,
+      "ack_seconds": 0.0618,
+      "bytes_written": 856,
+      "chunks": 44,
+      "corpus": "long_lines",
+      "device_messages": [
+        {
+          "message": "",
+          "type": "download"
+        }
+      ],
+      "errors": [],
+      "grade": {
+        "actual_bytes": 810,
+        "actual_lines": 14,
+        "actual_sha": "6c058d4e1ed17414",
+        "byte_accuracy": 0.987805,
+        "corrupt_lines_still_valid_python": 1,
+        "exact_match": false,
+        "expected_bytes": 830,
+        "expected_lines": 14,
+        "expected_sha": "bfa157c52ebd6b29",
+        "first_divergence_offset": 225,
+        "lines_corrupted": 1,
+        "lines_extra": 0,
+        "lines_missing": 0,
+        "readback_failed": false
+      },
+      "iteration": 0,
+      "local_write_seconds": 1.9467,
+      "protocol": "legacy",
+      "protocol_events": [],
+      "protocol_loss_bytes": -1,
+      "sent_bytes": 829,
+      "throughput_bytes_per_second": 426.2,
+      "total_seconds": 2.0085,
+      "transport": "ble",
+      "writes": 44
+    },
+    {
+      "ack_received": true,
+      "ack_seconds": 0.0902,
+      "bytes_written": 140,
+      "chunks": 8,
+      "corpus": "unicode_mix",
+      "device_messages": [
+        {
+          "message": "",
+          "type": "download"
+        }
+      ],
+      "errors": [],
+      "grade": {
+        "actual_bytes": 114,
+        "actual_lines": 5,
+        "actual_sha": "826dfb45f227ea97",
+        "byte_accuracy": 1.0,
+        "corrupt_lines_still_valid_python": 0,
+        "exact_match": true,
+        "expected_bytes": 114,
+        "expected_lines": 5,
+        "expected_sha": "826dfb45f227ea97",
+        "first_divergence_offset": null,
+        "lines_corrupted": 0,
+        "lines_extra": 0,
+        "lines_missing": 0,
+        "readback_failed": false
+      },
+      "iteration": 0,
+      "local_write_seconds": 0.3506,
+      "protocol": "legacy",
+      "protocol_events": [],
+      "protocol_loss_bytes": -1,
+      "sent_bytes": 113,
+      "throughput_bytes_per_second": 317.6,
+      "total_seconds": 0.4408,
+      "transport": "ble",
+      "writes": 8
+    },
+    {
+      "ack_received": true,
+      "ack_seconds": 0.0627,
+      "bytes_written": 326,
+      "chunks": 17,
+      "corpus": "edge_cases",
+      "device_messages": [
+        {
+          "message": "",
+          "type": "download"
+        }
+      ],
+      "errors": [],
+      "grade": {
+        "actual_bytes": 298,
+        "actual_lines": 7,
+        "actual_sha": "e9f76da758723484",
+        "byte_accuracy": 1.0,
+        "corrupt_lines_still_valid_python": 0,
+        "exact_match": true,
+        "expected_bytes": 298,
+        "expected_lines": 7,
+        "expected_sha": "e9f76da758723484",
+        "first_divergence_offset": null,
+        "lines_corrupted": 0,
+        "lines_extra": 0,
+        "lines_missing": 0,
+        "readback_failed": false
+      },
+      "iteration": 0,
+      "local_write_seconds": 0.7421,
+      "protocol": "legacy",
+      "protocol_events": [],
+      "protocol_loss_bytes": 1,
+      "sent_bytes": 299,
+      "throughput_bytes_per_second": 405.1,
+      "total_seconds": 0.8048,
+      "transport": "ble",
+      "writes": 17
+    },
+    {
+      "ack_received": true,
+      "ack_seconds": 0.0752,
+      "bytes_written": 7240,
+      "chunks": 363,
+      "corpus": "stress",
+      "device_messages": [
+        {
+          "message": "",
+          "type": "download"
+        }
+      ],
+      "errors": [],
+      "grade": {
+        "actual_bytes": 7214,
+        "actual_lines": 243,
+        "actual_sha": "dc43fba2de5b9a4b",
+        "byte_accuracy": 1.0,
+        "corrupt_lines_still_valid_python": 0,
+        "exact_match": true,
+        "expected_bytes": 7214,
+        "expected_lines": 243,
+        "expected_sha": "dc43fba2de5b9a4b",
+        "first_divergence_offset": null,
+        "lines_corrupted": 0,
+        "lines_extra": 0,
+        "lines_missing": 0,
+        "readback_failed": false
+      },
+      "iteration": 0,
+      "local_write_seconds": 16.0771,
+      "protocol": "legacy",
+      "protocol_events": [],
+      "protocol_loss_bytes": -1,
+      "sent_bytes": 7213,
+      "throughput_bytes_per_second": 448.2,
+      "total_seconds": 16.1523,
+      "transport": "ble",
+      "writes": 363
+    },
+    {
+      "ack_received": true,
+      "ack_seconds": 0.0004,
+      "bytes_written": 147,
+      "chunks": 9,
+      "corpus": "command_injection",
+      "device_messages": [
+        {
+          "message": "",
+          "type": "download"
+        },
+        {
+          "message": "No upload in progress",
+          "type": "error"
+        }
+      ],
+      "errors": [
+        "No upload in progress"
+      ],
+      "grade": {
+        "actual_bytes": 49,
+        "actual_lines": 3,
+        "actual_sha": "8c2384aece989e02",
+        "byte_accuracy": 1.0,
+        "corrupt_lines_still_valid_python": 0,
+        "exact_match": true,
+        "expected_bytes": 49,
+        "expected_lines": 3,
+        "expected_sha": "8c2384aece989e02",
+        "first_divergence_offset": null,
+        "lines_corrupted": 0,
+        "lines_extra": 0,
+        "lines_missing": 0,
+        "readback_failed": false
+      },
+      "iteration": 0,
+      "local_write_seconds": 0.4036,
+      "protocol": "legacy",
+      "protocol_events": [
+        {
+          "effect": "dropped: no upload open",
+          "line": 5,
+          "text": "print('after: the current firmwa"
+        },
+        {
+          "effect": "dropped: no upload open",
+          "line": 6,
+          "text": "c = 3"
+        },
+        {
+          "effect": "no upload in progress",
+          "line": 7,
+          "text": "x03ENDUPLD"
+        }
+      ],
+      "protocol_loss_bytes": 71,
+      "sent_bytes": 120,
+      "throughput_bytes_per_second": 363.9,
+      "total_seconds": 0.404,
+      "transport": "ble",
+      "writes": 9
+    },
+    {
+      "ack_received": true,
+      "ack_seconds": 0.1095,
+      "bytes_written": 101,
+      "chunks": 6,
+      "corpus": "command_guard",
+      "device_messages": [
+        {
+          "message": "",
+          "type": "download"
+        }
+      ],
+      "errors": [],
+      "grade": {
+        "actual_bytes": 75,
+        "actual_lines": 5,
+        "actual_sha": "6527337bff2c8fde",
+        "byte_accuracy": 1.0,
+        "corrupt_lines_still_valid_python": 0,
+        "exact_match": true,
+        "expected_bytes": 75,
+        "expected_lines": 5,
+        "expected_sha": "6527337bff2c8fde",
+        "first_divergence_offset": null,
+        "lines_corrupted": 0,
+        "lines_extra": 0,
+        "lines_missing": 0,
+        "readback_failed": false
+      },
+      "iteration": 0,
+      "local_write_seconds": 0.2663,
+      "protocol": "legacy",
+      "protocol_events": [],
+      "protocol_loss_bytes": -1,
+      "sent_bytes": 74,
+      "throughput_bytes_per_second": 268.8,
+      "total_seconds": 0.3758,
+      "transport": "ble",
+      "writes": 6
+    }
+  ],
+  "summary": {
+    "bytes_lost_to_protocol_design": 75,
+    "cases": 8,
+    "cases_with_protocol_loss": 2,
+    "corrupt_lines_that_would_still_run": 1,
+    "exact_matches": 7,
+    "integrity_rate": 0.875,
+    "mean_byte_accuracy": 0.998476,
+    "mean_throughput_bytes_per_second": 356.7,
+    "uploads_confirmed_by_board": 8
+  }
+}

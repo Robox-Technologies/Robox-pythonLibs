@@ -27,10 +27,21 @@ class TestChecksums(unittest.TestCase):
             value = p.frame_checksum(seq, p.KIND_DATA, bytes([seq]) * 10)
             self.assertTrue(0 <= value <= 0xFFFF)
 
-    def test_normalise_drops_blank_lines_and_normalises_endings(self):
+    def test_normalise_collapses_line_endings(self):
         self.assertEqual(
-            p.normalise_program("a\r\n\r\nb\rc\n\n"), "a\nb\nc\n"
+            p.normalise_program("a\r\n\r\nb\rc\n"), "a\n\nb\nc\n"
         )
+
+    def test_normalise_preserves_blank_lines(self):
+        """A blank line is explicit now that a frame states its length."""
+        self.assertEqual(
+            p.normalise_program("x = 1\n\n\ny = 2\n"), "x = 1\n\n\ny = 2\n"
+        )
+        self.assertEqual(p.program_line_count("x = 1\n\n\ny = 2\n"), 4)
+
+    def test_normalise_guarantees_one_trailing_newline(self):
+        self.assertEqual(p.normalise_program("a\nb"), "a\nb\n")
+        self.assertEqual(p.normalise_program("a\nb\n"), "a\nb\n")
 
     def test_normalise_preserves_trailing_whitespace(self):
         """Trailing spaces are meaningful inside string literals."""
@@ -48,7 +59,7 @@ class TestChecksums(unittest.TestCase):
         )
 
     def test_empty_program(self):
-        self.assertEqual(p.normalise_program("\n\n"), "")
+        self.assertEqual(p.normalise_program(""), "")
         self.assertEqual(p.program_line_count(""), 0)
 
 

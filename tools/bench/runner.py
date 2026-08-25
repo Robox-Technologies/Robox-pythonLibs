@@ -4,7 +4,7 @@ import difflib
 import hashlib
 import time
 
-from . import framed, legacy, transports
+from . import framed, transports
 
 
 def _sha(text):
@@ -89,29 +89,29 @@ def run_case(
     port=None,
     ack_timeout=10.0,
     settle=0.5,
-    protocol="legacy",
+    chunk_delay_ms=None,
 ):
     """Upload one corpus and read the result back over USB."""
     from . import protocol_shim
 
-    if protocol == "v2":
-        # The framed protocol stores every non-blank line verbatim, so the
-        # oracle is just the normalised program: no losses to model.
-        expected = protocol_shim.normalise(code)
-        upload = framed.upload(
-            transport,
-            code,
-            chunk_size=transports.BLE_CHUNK_SIZE if transport.chunked else None,
-            chunk_delay=(
-                transports.BLE_WRITE_TIMEOUT_S if transport.chunked else 0.0
-            ),
-        )
-        upload["ack_received"] = upload.get("verified", False)
-        upload["device_messages"] = upload.pop("replies", [])
-        upload["errors"] = [m for m in upload["device_messages"] if '"error"' in m]
-    else:
-        expected = legacy.expected_program(code)
-        upload = legacy.upload(transport, code, ack_timeout=ack_timeout)
+    delay = (
+        transports.BLE_WRITE_TIMEOUT_S
+        if chunk_delay_ms is None
+        else chunk_delay_ms / 1000.0
+    )
+
+    # Every non-blank line is stored verbatim, so the oracle is just the
+    # normalised program. There are no protocol losses left to model.
+    expected = protocol_shim.normalise(code)
+    upload = framed.upload(
+        transport,
+        code,
+        chunk_size=transports.BLE_CHUNK_SIZE if transport.chunked else None,
+        chunk_delay=delay if transport.chunked else 0.0,
+    )
+    upload["ack_received"] = upload.get("verified", False)
+    upload["device_messages"] = upload.pop("replies", [])
+    upload["errors"] = [m for m in upload["device_messages"] if '"error"' in m]
 
     # The readback needs the serial port, and only one client may hold it.
     transport_was_usb = transport.name == "usb"
@@ -128,20 +128,13 @@ def run_case(
     result = {
         "corpus": name,
         "transport": transport.name,
-        "protocol": protocol,
+        "protocol": "framed",
         "sent_bytes": len(code.encode()),
         # Data the protocol throws away by design, even over a perfect link.
         # Kept separate from transport loss so a green "EXACT" row cannot hide
         # the fact that user code went missing.
         "protocol_loss_bytes": len(code.encode()) - len(expected.encode()),
-        "protocol_events": (
-            []
-            if protocol == "v2"
-            else [
-                {"line": line, "text": text, "effect": effect}
-                for line, text, effect in legacy.protocol_events(code)
-            ]
-        ),
+        "protocol_events": [],
     }
     result.update(upload)
     result["grade"] = grade(expected, actual)

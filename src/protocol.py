@@ -96,12 +96,26 @@ def frame_checksum(seq, kind, payload):
 def normalise_program(text):
     """Canonical form both ends checksum.
 
-    The board stores lines newline-terminated and drops blank ones, so raw
-    source would never match stored source even on a perfect link.
+    Line endings collapse to \n and exactly one trailing newline is
+    guaranteed; nothing else changes. Blank lines are preserved: the old
+    protocol dropped them because an empty line was indistinguishable from
+    noise on the UART, but a frame states its payload length, so an empty line
+    is now explicit and the stored program can be a faithful copy of what was
+    written.
     """
     unified = text.replace("\r\n", "\n").replace("\r", "\n")
-    kept = [line for line in unified.split("\n") if line.strip()]
-    return "".join(line + "\n" for line in kept)
+    if not unified:
+        return ""
+
+    lines = unified.split("\n")
+    # split() leaves a trailing empty element when the text ended in a newline;
+    # that is not a blank line of its own.
+    if lines[-1] == "":
+        lines.pop()
+    if not lines:
+        return ""
+
+    return "".join(line + "\n" for line in lines)
 
 
 def program_checksum(text):
@@ -143,16 +157,18 @@ def frame_length(payload_length):
     return FRAME_OVERHEAD + payload_length
 
 
-def split_line(line, limit=MAX_PAYLOAD):
-    """Break one source line into frame-sized payloads.
+def split_payload(text, final_kind, limit=MAX_PAYLOAD):
+    """Break text into frame-sized payloads.
 
     Splits on encoded bytes but never inside a multi-byte character, which
-    would decode to a replacement character and corrupt the stored program.
-    Returns [(kind, payload)], last piece KIND_DATA, earlier ones KIND_CONTINUE.
+    would decode to a replacement character and corrupt the result. All but the
+    last piece are KIND_CONTINUE, so CONTINUE means only "the payload continues
+    in the next frame" and works in either direction: program text ends in a
+    DATA frame, a device message ends in a REPLY frame.
     """
-    encoded = line.encode()
+    encoded = text.encode() if isinstance(text, str) else text
     if len(encoded) <= limit:
-        return [(KIND_DATA, encoded)]
+        return [(final_kind, encoded)]
 
     pieces = []
     offset = 0
@@ -168,9 +184,14 @@ def split_line(line, limit=MAX_PAYLOAD):
         offset = end
 
     return [
-        (KIND_DATA if index == len(pieces) - 1 else KIND_CONTINUE, piece)
+        (final_kind if index == len(pieces) - 1 else KIND_CONTINUE, piece)
         for index, piece in enumerate(pieces)
     ]
+
+
+def split_line(line, limit=MAX_PAYLOAD):
+    """Break one source line into frame-sized payloads, ending in DATA."""
+    return split_payload(line, KIND_DATA, limit)
 
 
 def encode_program(text, start_seq=0):

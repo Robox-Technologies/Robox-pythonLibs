@@ -37,28 +37,24 @@ class FramedSession:
 
         #: True only after an END frame whose totals matched. Gates running.
         self.verified = False
-        #: Sequence for our own outbound flow frames.
-        self.out_seq = 0
 
     # --- outbound ----------------------------------------------------------
 
-    def _send(self, kind, payload):
-        """Write a frame straight out, bypassing the message queue.
+    def _send_flow(self, kind):
+        """Write a flow frame straight out, bypassing the message queue.
 
         Flow control must not queue behind console output: an ACK stuck behind
         a traceback stalls the sender until its timeout fires.
         """
-        frame = p.encode_frame(self.out_seq, kind, payload)
-        self.out_seq = (self.out_seq + 1) % p.SEQUENCE_MODULO
-        self.comm.write_raw(frame)
-
-    def _send_flow(self, kind):
         expected, credit = self.receiver.take_ack()
-        self._send(kind, "%02x,%04x" % (expected, credit))
+        payload = "%02x,%04x" % (expected, credit)
+        self.comm.write_raw(
+            p.encode_frame(self.comm.next_out_seq(), kind, payload.encode())
+        )
 
     def reply(self, message_type, content):
-        """Send a device message inside a REPLY frame."""
-        self._send(p.KIND_REPLY, generate_reply(message_type, content))
+        """Queue a device message. The interface frames it."""
+        self.comm.write_message(message_type, content)
 
     # --- inbound -----------------------------------------------------------
 
@@ -75,12 +71,16 @@ class FramedSession:
 
         commands = []
         for frame in frames:
-            # BEGIN is a resynchronisation point by definition: it means "start
-            # this program from scratch". Without this, a second upload on the
-            # same connection restarts at sequence 0 while the receiver is
-            # still expecting N, so every frame reads as a stale duplicate and
-            # the whole upload is silently ignored.
-            if frame.kind == p.KIND_BEGIN:
+            # BEGIN and COMMAND are self-contained: they start a new
+            # interaction rather than continuing a stream, so they
+            # resynchronise the sequence.
+            #
+            # The sequence space exists to order the frames *within* one
+            # upload. Without this, a second upload restarts at sequence 0
+            # while the receiver still expects N and every frame reads as a
+            # stale duplicate, and a reconnecting client's firmware check is
+            # ignored the same way. The checksum still protects both.
+            if frame.kind in (p.KIND_BEGIN, p.KIND_COMMAND):
                 self.receiver.reset(frame.seq)
 
             if self.receiver.accept(frame) != "accept":
@@ -179,16 +179,18 @@ class FramedSession:
         crc_ok = declared is not None and self.running_crc == declared
         self.verified = lines_ok and crc_ok
 
+        # A dict, not a pre-built JSON string: write_message runs json.dumps
+        # over it, so a string would arrive at the client escaped inside
+        # another string and its verdict check would never match.
         self.reply(
             "uploaded",
-            '{"ok":%s,"lines":%d,"expected":%d,"crc":"%08x","want":"%08x"}'
-            % (
-                "true" if self.verified else "false",
-                self.stored_lines,
-                self.expected_lines,
-                self.running_crc,
-                declared or 0,
-            ),
+            {
+                "ok": self.verified,
+                "lines": self.stored_lines,
+                "expected": self.expected_lines,
+                "crc": "%08x" % self.running_crc,
+                "want": "%08x" % (declared or 0),
+            },
         )
 
     def close(self):
@@ -207,16 +209,3 @@ class FramedSession:
             "duplicates": self.receiver.duplicates,
             "resyncs": self.reader.resyncs,
         }
-
-
-def generate_reply(message_type, content):
-    """A device message as JSON, for carrying inside a REPLY frame.
-
-    Hand-built rather than json.dumps so `content` can already be a JSON
-    fragment (the upload result) without being double-encoded.
-    """
-    if content.startswith("{") or content.startswith("["):
-        body = content
-    else:
-        body = '"%s"' % content.replace("\\", "\\\\").replace('"', '\\"')
-    return '{"type":"%s","message":%s}' % (message_type, body)

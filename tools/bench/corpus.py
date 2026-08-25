@@ -14,14 +14,11 @@ runs at import time.
 
 import random
 
-# Commands the firmware acts on the instant it sees a bare line matching one.
-# A corpus line equal to one would be swallowed rather than stored. That is a
-# real bug worth demonstrating, so one corpus case does exactly that, using
-# only a harmless command.
-# The one handled command with no hardware side effect: it just closes the
-# upload file. The others reply, sleep an interface, rewrite the colour
-# calibration, reset the board, or (x04STARTPROG) run program.py and drive
-# the motors.
+# The old protocol acted on any bare line matching a command, so a line of user
+# code equal to one was executed instead of stored. Commands now travel by name
+# inside a COMMAND frame, so these strings are ordinary text. The corpora below
+# keep using them as regression tests: they must round-trip byte for byte.
+# Kept as the payload for the injection regression test.
 INJECTABLE_COMMAND = "x03ENDUPLD"
 # Never allowed as a bare corpus line, at any point, for any reason.
 DANGEROUS_COMMANDS = (
@@ -155,10 +152,9 @@ def stress(seed=20260825, lines=200):
 def command_injection():
     """A program whose 4th line is bare `x03ENDUPLD`.
 
-    Nothing here is a transport problem: over a *perfect* link the current
-    firmware still loses everything from that line onward, because user code
-    and control commands share one unframed channel. This corpus exists to
-    measure that, and to prove the replacement protocol fixes it.
+    Under the old protocol this lost everything from that line onward, over a
+    perfect link, because user code and control commands shared one unframed
+    channel. It must now round-trip byte for byte.
     """
     return "\n".join(
         [
@@ -173,14 +169,10 @@ def command_injection():
 
 
 def command_guard():
-    """A bare `x01FIRMCHECK` in the middle of an upload.
+    """A bare `x01FIRMCHECK` in the middle of a program.
 
-    Mid-upload the firmware honours only end_upload, so this line must be
-    stored as program text. Before the guard it was swallowed, the board
-    replied with its version, and the other interface went to sleep mid-upload.
-
-    x01FIRMCHECK is the safe choice: acted on, the worst case is a redundant
-    version reply.
+    Once swallowed as a command, which made the board reply with its version
+    and put the other interface to sleep mid-upload. Now ordinary text.
     """
     return "\n".join(
         [

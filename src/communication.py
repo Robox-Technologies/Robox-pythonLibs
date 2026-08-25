@@ -5,6 +5,8 @@ import select
 import time
 import _thread
 
+import protocol as p
+
 
 # ========================
 # Tuning
@@ -128,6 +130,24 @@ class CommunicationInterface:
         """
         queue_outgoing_message(self, message_type, content)
 
+    def next_out_seq(self):
+        """Sequence for the next outbound frame on this interface."""
+        seq = self.out_seq
+        self.out_seq = (seq + 1) % p.SEQUENCE_MODULO
+        return seq
+
+    def encode_reply(self, message_type, content):
+        """Frames carrying one device message.
+
+        Long messages (a traceback, a chatty print) exceed one payload, so they
+        are split across CONTINUE frames and terminated by a REPLY frame.
+        """
+        body = generate_message(message_type, content)
+        return [
+            p.encode_frame(self.next_out_seq(), kind, payload)
+            for kind, payload in p.split_payload(body, p.KIND_REPLY)
+        ]
+
     def _write_message_now(self, message_type, content):
         raise NotImplementedError
 
@@ -148,6 +168,8 @@ class USBCommunication(CommunicationInterface):
         self.name = "USB"
         self.sleeping = False
 
+        self.out_seq = 0
+
         self.poller = select.poll()
         self.poller.register(sys.stdin, select.POLLIN)
 
@@ -162,7 +184,8 @@ class USBCommunication(CommunicationInterface):
         return line.rstrip("\n") if line else None
 
     def _write_message_now(self, message_type, content):
-        print(generate_message(message_type, content))
+        for frame in self.encode_reply(message_type, content):
+            self.write_raw(frame)
 
     def write_raw(self, data):
         # stdout.buffer, not stdout: the text stream translates a lone newline
@@ -198,6 +221,7 @@ class BluetoothCommunuication(CommunicationInterface):
 
             self.buffer = b""
             self.ok = True
+            self.out_seq = 0
 
             # Rate limiting
             self.next_send_time = 0
@@ -238,15 +262,15 @@ class BluetoothCommunuication(CommunicationInterface):
         return time.ticks_diff(time.ticks_ms(), self.next_send_time) >= 0
 
     def _write_message_now(self, message_type, content):
-        message = generate_message(message_type, content) + "\n"
-        payload = message.encode()
-
-        self.uart.write(payload)
+        total = 0
+        for frame in self.encode_reply(message_type, content):
+            self.uart.write(frame)
+            total += len(frame)
 
         # Pace by bytes sent, not a flat delay: the old 300ms throttled a
         # 20-byte status message as hard as a 400-byte traceback.
         transmit_ms = int(
-            len(payload) * 1000 * SEND_HEADROOM / UART_BYTES_PER_SECOND
+            total * 1000 * SEND_HEADROOM / UART_BYTES_PER_SECOND
         )
         self.next_send_time = time.ticks_add(
             time.ticks_ms(), max(MIN_SEND_INTERVAL_MS, transmit_ms)

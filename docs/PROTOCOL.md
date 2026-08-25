@@ -128,11 +128,42 @@ is unaware it is running nonsense":
 5. The board independently refuses `start_program` after an upload that did not
    verify, so a client that ignores the verdict still cannot run garbage.
 
-Normalisation matters: the board stores lines newline-terminated and drops
-blank ones, so raw source would never match stored source even on a perfect
-link. Both ends run the same `normalise_program`. **Blank lines are still not
-preserved** — a deliberate carry-over from the legacy behaviour, harmless for
-Python semantics, and both ends agree on it so the CRC matches.
+Both ends run the same `normalise_program`, which collapses line endings to
+`\n` and guarantees exactly one trailing newline. Nothing else changes: blank
+lines and trailing whitespace are preserved, so the stored program is a
+faithful copy of what was written. The old protocol dropped blank lines because
+an empty line was indistinguishable from noise on the UART; a frame states its
+payload length, so an empty line is now explicit.
+
+## Retransmission, precisely
+
+Yes, loss is repaired, but the unit of repair is a **frame**, not a chunk. The
+sender has no idea a 20-byte BLE write went missing; the receiver notices that
+a frame is damaged or that a sequence number is missing.
+
+What happens to a corrupted or dropped chunk:
+
+1. The chunk was part of a frame. Losing it either truncates that frame or
+   makes its checksum fail, so the frame is discarded and counted as damage.
+2. The receiver is now missing a sequence number, so it NAKs with the sequence
+   it still wants and stops accepting.
+3. The sender rewinds to that sequence and resends **that frame and every frame
+   after it**, which is go-back-N. Frames already sent past the gap are resent
+   even though they arrived intact, because accepting them would leave a hole
+   in the middle of the program.
+4. If the NAK itself is lost, the sender's timeout fires and it resends from
+   the oldest unacknowledged frame, which reaches the same place.
+5. After `MAX_RETRANSMITS` the upload fails loudly instead of looping.
+
+Go-back-N rather than selective repeat because the window here is small (2048
+bytes, roughly twenty frames) and the receiver writes straight to a file as
+frames arrive, so it has nowhere to hold out-of-order frames. Resending a few
+extra frames is cheaper than buffering the program twice on a device with
+264KB of RAM.
+
+Measured on hardware over BLE: the `typical` and `command_injection` corpora
+each took 2 NAKs and recovered byte-exact, so this path runs in practice rather
+than only in tests.
 
 ## Why the command strings were not the problem
 
@@ -155,11 +186,15 @@ The fix is structural, and it is threefold:
    fixed list, in a frame whose kind says it is a command. User code cannot
    produce one, because user code only ever becomes `D` and `C` frames.
 
-For clients still on the legacy path, the firmware also honours only
-`end_upload` while an upload is in flight and treats every other
-command-looking line as program text. That shrinks the injection surface from
-eight strings to one without breaking old clients. The framed protocol removes
-the last one.
+The old strings are gone entirely. Firmware 2.0.0 has no unframed path: a bare
+line is ignored, whatever it says, so there is nothing left to injure. Commands
+are the names in `COMMAND_NAMES`, carried in `X` frames, and program text only
+ever becomes `D` or `C` frames.
+
+There is deliberately no compatibility path. The website checks the handshake
+and refuses to upload to anything below 2.0.0, telling the user to update.
+Keeping a fallback would have meant keeping the code that corrupted programs,
+and a client that silently downgrades to it is the worst of both.
 
 ## Running the tests
 

@@ -25,10 +25,23 @@ time and refuses any corpus containing a motor API or a dangerous bare command.
 
 ### Reading the report
 
-`accuracy` is the transport verdict: `EXACT` means the board stored precisely
-what the protocol *should* have stored. `lost` is separate and more important —
-bytes the protocol discards **by design, over a perfect link**. A run can be
-100% `EXACT` and still be losing user code.
+Three byte counts, and they are not meant to match:
+
+| column | meaning |
+|---|---|
+| `sent` | raw corpus bytes, the source as generated |
+| `expected` | what the protocol should store for it: identical to `sent` apart from one guaranteed trailing newline |
+| `stored` | what is actually on the board, read back over USB |
+
+`verdict` is `EXACT` when `stored == expected`. It is never compared against
+`sent`, because `sent` is not what a correct upload stores. Since blank lines
+are now preserved, the only remaining difference is the single trailing newline
+the board guarantees, so `expected` is always `sent + 1` for these corpora and
+`lost` is zero throughout.
+
+`lost` is the column that matters: bytes the protocol discards **by design,
+over a perfect link**. Under the old protocol a run could be 100% `EXACT` and
+still be losing user code, which is exactly what `command_injection` did.
 
 ## Baseline (firmware 1.0.0, legacy protocol)
 
@@ -87,8 +100,9 @@ What changed, and what did not:
   line plus ACK round trips on a link that never lost anything to begin with.
   The trade only pays where loss is real, which is BLE, where credit pacing also
   replaces the fixed 40 ms per chunk that caps legacy at roughly 500 B/s.
-* The remaining 4 bytes of "loss" are blank lines, which both ends agree to drop
-  so the CRC still matches. Deliberate; see PROTOCOL.md.
+* Blank lines used to be dropped, so a stored program was never a faithful copy
+  of the source. They are preserved now, which is why protocol data loss reads
+  zero on 2.0.0.
 
 Two bugs were found by testing rather than by reading, both of which would have
 caused real frame loss on hardware:
@@ -143,3 +157,11 @@ Security → Bluetooth — then:
 python3 -m pip install --user bleak
 ./tools/comm-bench --transport ble --out docs/comm-baseline-ble.json
 ```
+
+## Hardware notes
+
+The board is a plain Raspberry Pi Pico with an external HM-10 Bluetooth module
+on UART0 (GPIO0/GPIO1). Worth writing down because the MicroPython build
+flashed on it reports itself as `Raspberry Pi Pico W with RP2040`, so
+`os.uname()` is misleading: there is no wireless chip, and GPIO25 is the onboard
+LED as normal.

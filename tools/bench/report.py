@@ -14,28 +14,37 @@ def render(report):
     lines.append("started    %s" % meta["started"])
     lines.append("")
 
-    header = "%-18s %7s %7s %9s %8s %7s %6s" % (
-        "corpus", "sent", "stored", "accuracy", "thr B/s", "ack", "lost")
+    header = "%-18s %7s %8s %7s %8s %8s %6s" % (
+        "corpus", "sent", "expected", "stored", "verdict", "thr B/s", "lost")
     lines.append(header)
     lines.append("-" * len(header))
     for result in report["results"]:
         grade = result["grade"]
-        # `lost` counts bytes the protocol discards even over a perfect link;
-        # the +/-1 wobble is just the trailing newline the firmware adds.
+        # `lost` is bytes the protocol discards even over a perfect link. The
+        # 1-byte differences are the trailing newline the board adds, which is
+        # not loss, so only real loss is shown.
         loss = result.get("protocol_loss_bytes", 0)
         lines.append(
-            "%-18s %7d %7s %9s %8s %7s %6s"
+            "%-18s %7d %8s %7s %8s %8s %6s"
             % (
                 result["corpus"],
                 result["sent_bytes"],
+                grade.get("expected_bytes", "-"),
                 grade.get("actual_bytes", "-"),
                 "EXACT" if grade["exact_match"] else "%.4f" % (grade.get("byte_accuracy") or 0),
                 result["throughput_bytes_per_second"] or "-",
-                "yes" if result["ack_received"] else "NO",
                 loss if loss > 1 else "-",
             )
         )
 
+    lines.append("")
+    lines.append(
+        "sent      raw corpus bytes.\n"
+        "expected  what the protocol should store for it. Identical to sent\n"
+        "          apart from one guaranteed trailing newline, which is the\n"
+        "          only reason the two ever differ.\n"
+        "verdict   EXACT means stored == expected. Never compared against sent."
+    )
     lines.append("")
     summary = report["summary"]
     lines.append("integrity            %d/%d exact (%.1f%%)" % (

@@ -6,6 +6,7 @@ reads ACK/NAK to advance or rewind, and refuses to call an upload good until
 the board reports a matching line count and CRC.
 """
 
+import json
 import sys
 import time
 
@@ -48,6 +49,7 @@ def upload(transport, code, chunk_size=None, chunk_delay=0.0):
 
     verdict = None
     replies = []
+    continuation = []
     started = time.time()
     last_progress = started
 
@@ -70,10 +72,19 @@ def upload(transport, code, chunk_size=None, chunk_delay=0.0):
                 expected, _ = p.parse_flow(frame.payload)
                 if window.on_nak(expected):
                     stats["naks"] += 1
+            elif frame.kind == p.KIND_CONTINUE:
+                # A device message longer than one payload. Hold the piece
+                # until the terminating REPLY frame arrives.
+                continuation.append(frame.payload)
             elif frame.kind == p.KIND_REPLY:
-                replies.append(frame.text())
-                if '"uploaded"' in frame.text():
-                    verdict = frame.text()
+                body = (b"".join(continuation) + frame.payload).decode(
+                    "utf-8", "replace"
+                )
+                del continuation[:]
+                replies.append(body)
+                parsed = _parse_message(body)
+                if parsed and parsed.get("type") == "uploaded":
+                    verdict = parsed.get("message")
         return True
 
     def send(frame):
@@ -129,11 +140,25 @@ def upload(transport, code, chunk_size=None, chunk_delay=0.0):
     stats["local_write_seconds"] = round(local_done - started, 4)
     stats["total_seconds"] = round(time.time() - started, 4)
     stats["verdict"] = verdict
-    stats["verified"] = bool(verdict and '"ok":true' in verdict)
+    # Checked as structure, not as a substring: a substring match passed even
+    # when the board was double-encoding the verdict into a JSON string.
+    stats["verified"] = bool(
+        isinstance(verdict, dict)
+        and verdict.get("ok") is True
+        and verdict.get("crc") == "%08x" % p.program_checksum(code)
+    )
     stats["replies"] = replies
     stats["expected_crc"] = "%08x" % p.program_checksum(code)
     stats["expected_lines"] = p.program_line_count(code)
     return stats
+
+
+def _parse_message(body):
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def send_command(transport, name):
