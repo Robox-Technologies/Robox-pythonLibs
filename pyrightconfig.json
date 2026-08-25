@@ -10,7 +10,7 @@
 
   "include": ["src", "template_program.py"],
 
-  "exclude": ["typings", "build", "**/__pycache__"],
+  "exclude": ["typings", "build", "**/__pycache__", "**/node_modules", "**/.*"],
 
   // picozero is a vendored third-party dependency. Still importable, we just
   // don't report its type errors as though they were ours (that alone was
