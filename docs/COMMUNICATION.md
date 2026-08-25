@@ -215,12 +215,68 @@ reached the ceiling for something that warranted one step; a fixed 2 ms probe
 then needed eighty acknowledgements to climb back down, which is longer than
 most uploads. It spent its life crawling downhill.
 
-Both halves are now fixed: one backoff per loss *episode*, rearmed by the next
+Both halves were fixed: one backoff per loss *episode*, rearmed by the next
 clean acknowledgement, and a proportional probe so recovery does not depend on
-how far it went. The same six-NAK burst now costs one step and recovers in four
-acknowledgements instead of eighty.
+how far it went.
 
-Re-run to confirm on radio:
+### After the fix
+
+Same board, same corpora, measured against the same fixed 30 ms:
+
+| | fixed 30 ms | adaptive v1 | adaptive v2 |
+|---|---|---|---|
+| integrity | 8/8 | 8/8 | 8/8 |
+| goodput | 232 B/s | 145 B/s | **252 B/s** |
+| wall clock | 40.3 s | 64.6 s | **37.2 s** |
+| retransmits | 10 | 5 | 10 |
+| wire overhead | 1.98x | 1.66x | 2.17x |
+| mean delay | 30 ms fixed | oscillated 21-120 | **24 ms** |
+
+**+8.4% goodput and 7.7% less wall clock than the best hand-picked constant**,
+at the same integrity and the same retransmit count.
+
+The coalescing is doing the work. Across that run the controller saw **293**
+loss signals and acted on **6** of them; v1 would have compounded its factor on
+all 293. And because the pacer belongs to the connection rather than the
+upload, it converges once and stays there:
+
+| corpus | mean delay |
+|---|---|
+| tiny | 40.0 ms |
+| typical | 27.6 ms |
+| long_lines | 25.1 ms |
+| unicode_mix | 24.7 ms |
+| edge_cases | 24.2 ms |
+| stress | 24.0 ms |
+| command_injection | 24.0 ms |
+| command_guard | 24.0 ms |
+
+Two things worth reading off that table.
+
+`tiny` pays the full 40 ms starting delay, because four acknowledgements is not
+enough feedback to converge. Adaptive pacing helps real programs, not trivial
+ones, and the starting value is deliberately conservative: the first upload on
+an unknown link should be safe rather than fast.
+
+It settled at **24 ms**, below the 30 ms the sweep called optimal, while
+causing no more retransmissions than fixed 30 ms did. That is further evidence
+the sweep's sub-30 rows were distorted by the harness bug, and a good
+illustration of why a hand-picked constant is the wrong shape of answer: the
+number was measured on one board, on one afternoon, with a bug in the meter.
+
+Higher wire overhead at the same retransmit count is expected, not a
+regression: a lower delay puts more frames in flight, so each go-back-N rewind
+resends more of them. More redundant bytes, less wall clock, better goodput.
+
+### What is still unmeasured
+
+All of this is one board in one RF environment. The stronger argument for
+adaptive pacing is the fleet: 30 ms was hand-picked *here*, and a different
+HM-10 at a different distance may need 45 ms, where a fixed 30 would thrash and
+the controller would simply settle higher. That benefit is real but untested,
+because there is only one board to test on.
+
+Reproduce with:
 
 ```bash
 ./tools/comm-bench --transport ble --out docs/ble-adaptive.json
@@ -232,7 +288,7 @@ Re-run to confirm on radio:
 
 The report prints a `pacing` line with the **mean** delay, which is the number
 that matters: the minimum and maximum cannot show where the controller spent
-its time, and that omission is what let the oscillation go unnoticed.
+its time, and that omission is what let v1's oscillation go unnoticed.
 
 ## Reading throughput
 
