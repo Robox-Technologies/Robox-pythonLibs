@@ -15,11 +15,10 @@ CMD_FIRMWARE_CHECK = "x01FIRMCHECK\r"
 CMD_BEGIN_UPLOAD = "x02BEGINUPLD\r"
 CMD_END_UPLOAD = "x03ENDUPLD\r"
 
-# Mirrors COMMANDS in Robox-pythonLibs/src/main.py, but only the entries the
-# main loop actually dispatches on. x07BOOTLOADER and x08DISCONNECT are in the
-# firmware's table with no matching branch, so they fall through to the
-# `elif out_file:` arm and get *stored* as program text -- which is itself a
-# bug, and one this harness must not paper over.
+# Mirrors COMMANDS in src/main.py, but only the entries the loop dispatches
+# on. x07BOOTLOADER and x08DISCONNECT were tabled with no matching branch, so
+# they fell through and were stored as program text. That is itself a bug, and
+# one this harness must not paper over.
 HANDLED_COMMANDS = {
     "x01FIRMCHECK": "firmware_check",
     "x02BEGINUPLD": "begin_upload",
@@ -38,17 +37,16 @@ _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 def simulate_firmware(lines):
     """Replay main.py's receive loop over `lines` and return what it stores.
 
-    A faithful model of the dispatch chain in src/main.py, including the parts
-    that are defects rather than features:
+    Models the dispatch chain in src/main.py, including the parts that are
+    defects rather than features:
 
-    * blank lines never reach the file (BLE read_line skips them; main.py's
-      `if not line: continue` drops the USB equivalent);
-    * a line equal to a handled command is executed, not stored -- so user code
+    * blank lines never reach the file;
+    * a line equal to a handled command is executed, not stored, so user code
       can hijack the protocol;
-    * begin_upload re-opens the file, truncating anything already written;
-    * once end_upload lands, later lines are silently discarded.
+    * begin_upload reopens the file, truncating anything already written;
+    * after end_upload, later lines are silently discarded.
 
-    Returns (stored_text, events) where events records each hijack.
+    Returns (stored_text, events), where events records each hijack.
     """
     stored = []
     out_open = False

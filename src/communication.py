@@ -10,29 +10,23 @@ import _thread
 # Tuning
 # ========================
 
-# The single most important number here. MicroPython's rp2 UART defaults to a
-# 64-byte receive buffer, which at 9600 baud is about 66ms of runway. The main
-# loop does blocking work between reads -- file writes, prints, calibration --
-# and a user program on the second core competes for the GIL, so overrunning
-# 64 bytes was easy and the overflow is silent: bytes vanish mid-line and the
-# board stores whatever is left.
+# The most important number here. The rp2 default of 64 bytes is about 66ms of
+# runway at 9600 baud, and the loop does blocking work between reads while a
+# user program competes for the GIL. Overflow is silent: bytes vanish mid-line.
 UART_RX_BUFFER = 4096
 
 # 9600 baud, 8N1, so ten bits on the wire per byte.
 UART_BYTES_PER_SECOND = 960
 
-# Pacing headroom over the theoretical line rate, to leave the module's own
-# buffer somewhere to go.
+# Headroom over the line rate, leaving the module's own buffer somewhere to go.
 SEND_HEADROOM = 1.4
 
-# Smallest gap between BLE sends. Enough to cover per-write overhead without
-# imposing the old flat 300ms, which capped console output at ~3 messages a
-# second regardless of how small they were.
+# Smallest gap between BLE sends. The old flat 300ms capped console output at
+# roughly three messages a second regardless of size.
 MIN_SEND_INTERVAL_MS = 15
 
-# An unbounded queue on a 264KB device is a crash waiting to happen. When a
-# user program prints faster than the link drains, drop the oldest: recent
-# output is more useful than stale output.
+# Unbounded growth on a 264KB device is a crash. Drop oldest when a program
+# prints faster than the link drains.
 MAX_QUEUED_MESSAGES = 64
 
 
@@ -42,8 +36,7 @@ MAX_QUEUED_MESSAGES = 64
 outgoing_messages = []
 queue_lock = _thread.allocate_lock()
 
-# Count of messages dropped to keep the queue bounded, so the loss is
-# reportable rather than invisible.
+# Dropped to keep the queue bounded, counted so the loss is reportable.
 dropped_message_count = 0
 
 
@@ -61,14 +54,12 @@ def queue_outgoing_message(comm, message_type, content):
 
 
 def flush_outgoing_messages():
-    """Send at most one queued message, if any interface is ready for it.
+    """Send at most one queued message, if an interface is ready for it.
 
-    The lock is held only long enough to take an entry off the queue. The
-    previous version released it mid-iteration and then relied on
-    `queue_lock.locked()` in a finally block to decide whether to release
-    again -- but `locked()` reports the state of the lock, not whether *this*
-    thread owns it, so if the other core acquired it in that window this
-    function released a lock belonging to someone else.
+    The lock is held only long enough to take an entry off the queue. The old
+    version released it mid-iteration then used `queue_lock.locked()` to decide
+    whether to release again, but that reports the lock's state, not this
+    thread's ownership, so it could release a lock belonging to the other core.
     """
     pending = None
 
@@ -76,8 +67,8 @@ def flush_outgoing_messages():
     try:
         for index in range(len(outgoing_messages)):
             comm = outgoing_messages[index][0]
-            # BLE paces itself; skip it while it is still draining and try the
-            # next entry, which may belong to an interface that is ready.
+            # BLE paces itself; skip while draining and try the next entry,
+            # which may belong to a ready interface.
             if hasattr(comm, "can_send_now") and not comm.can_send_now():
                 continue
             pending = outgoing_messages.pop(index)
@@ -89,8 +80,8 @@ def flush_outgoing_messages():
         return False
 
     comm, message_type, content = pending
-    # Deliberately outside the lock: writing can block on the UART, and the
-    # user program's thread must still be able to queue while that happens.
+    # Outside the lock: writing can block on the UART, and the user program's
+    # thread must still be able to queue meanwhile.
     comm._write_message_now(message_type, content)
     return True
 
@@ -119,9 +110,8 @@ class CommunicationInterface:
     def read_lines(self, limit=128):
         """Drain up to `limit` complete lines.
 
-        The main loop used to take a single line per iteration per interface,
-        so a burst arriving faster than the loop spun would sit in the UART
-        buffer until it overflowed. Draining is what keeps the buffer empty.
+        The loop used to take one line per interface per iteration, so a burst
+        arriving faster than it spun sat in the UART buffer until overflow.
         """
         lines = []
         for _ in range(limit):
@@ -196,8 +186,7 @@ class BluetoothCommunuication(CommunicationInterface):
             # Rate limiting
             self.next_send_time = 0
 
-            # Bytes discarded because they would not decode. Tracked so a
-            # corrupt link is measurable instead of merely suspected.
+            # Tracked so a corrupt link is measurable, not just suspected.
             self.decode_errors = 0
 
         except Exception:
@@ -207,8 +196,7 @@ class BluetoothCommunuication(CommunicationInterface):
         return self.ok
 
     def read_line(self):
-        # Take everything the UART has first, so the hardware buffer is emptied
-        # even when the caller only wants one line out of it.
+        # Empty the hardware buffer first, even if the caller wants one line.
         if self.uart.any():
             data = self.uart.read()
             if data:
@@ -239,10 +227,8 @@ class BluetoothCommunuication(CommunicationInterface):
 
         self.uart.write(payload)
 
-        # Pace by the number of bytes actually sent rather than a flat delay.
-        # The old fixed 300ms throttled a 20-byte status message exactly as
-        # hard as a 400-byte traceback, which capped console output at roughly
-        # three messages a second.
+        # Pace by bytes sent, not a flat delay: the old 300ms throttled a
+        # 20-byte status message as hard as a 400-byte traceback.
         transmit_ms = int(
             len(payload) * 1000 * SEND_HEADROOM / UART_BYTES_PER_SECOND
         )

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+#
+# tools/run-tests: offline tests for the firmware's pure logic. No hardware.
+#
+#   ./tools/run-tests            all tests
+#   ./tools/run-tests -k crc     only matching tests
+set -euo pipefail
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+exec python3 -m unittest discover -s tests -t . -v "$@"

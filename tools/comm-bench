@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# tools/comm-bench -- communication reliability benchmark / eval harness.
+# tools/comm-bench: communication reliability benchmark and eval harness.
 #
 #   ./tools/comm-bench --transport usb --out docs/comm-baseline-usb.json
 #   ./tools/comm-bench --transport ble --out docs/comm-baseline-ble.json

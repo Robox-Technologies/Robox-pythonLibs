@@ -65,7 +65,7 @@ Bluetooth permission (see "Running the BLE benchmark" below).
 ## The command-injection hole
 
 Commands travel **in-band**: `main.py` compares each received line against a
-table, so a line of *user code* that happens to match is executed instead of
+table, so a line of user code that happens to match is executed instead of
 stored.
 
 ```python

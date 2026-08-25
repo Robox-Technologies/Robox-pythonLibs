@@ -121,7 +121,7 @@ class UsbTransport(Transport):
             self._serial = serial.Serial(self.port_name, self.baudrate, timeout=0)
         except Exception as exc:
             raise TransportError(
-                "could not open %s (%s). Close the REPL/Thonny first -- only one "
+                "could not open %s (%s). Close the REPL/Thonny first, only one "
                 "client may hold the port." % (self.port_name, exc)
             ) from exc
 
@@ -150,8 +150,8 @@ class UsbTransport(Transport):
 class BleTransport(Transport):
     """HM-10 over GATT, driven exactly like the browser drives it.
 
-    bleak is asyncio-only, so this runs a private event loop and blocks -- the
-    harness is a synchronous script and the extra machinery is not worth it.
+    bleak is asyncio-only, so this runs a private event loop and blocks. The
+    harness is a synchronous script; the extra machinery is not worth it.
     """
 
     name = "ble"

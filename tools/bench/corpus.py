@@ -15,13 +15,13 @@ runs at import time.
 import random
 
 # Commands the firmware acts on the instant it sees a bare line matching one.
-# A corpus line equal to one of these would be swallowed as a command instead
-# of being stored -- which is a real bug we want to *demonstrate*, so one
-# corpus case does exactly that, but only ever with a harmless command.
+# A corpus line equal to one would be swallowed rather than stored. That is a
+# real bug worth demonstrating, so one corpus case does exactly that, using
+# only a harmless command.
 # The one handled command with no hardware side effect: it just closes the
-# upload file. Every other handled command replies, sleeps an interface,
-# rewrites the colour calibration, resets the board, or -- x04STARTPROG --
-# runs program.py and drives the motors.
+# upload file. The others reply, sleep an interface, rewrite the colour
+# calibration, reset the board, or (x04STARTPROG) run program.py and drive
+# the motors.
 INJECTABLE_COMMAND = "x03ENDUPLD"
 # Never allowed as a bare corpus line, at any point, for any reason.
 DANGEROUS_COMMANDS = (
@@ -166,7 +166,7 @@ def command_injection():
             "a = 1",
             "b = 2",
             INJECTABLE_COMMAND,
-            "print('after -- the current firmware never stores this')",
+            "print('after: the current firmware never stores this')",
             "c = 3",
         ]
     )
@@ -175,13 +175,12 @@ def command_injection():
 def command_guard():
     """A bare `x01FIRMCHECK` in the middle of an upload.
 
-    The firmware honours only end_upload while an upload is in flight, so this
-    line must be *stored as program text*, not executed. Before that guard
-    existed it was swallowed, the board replied with its firmware version, and
-    it put the other interface to sleep -- mid-upload.
+    Mid-upload the firmware honours only end_upload, so this line must be
+    stored as program text. Before the guard it was swallowed, the board
+    replied with its version, and the other interface went to sleep mid-upload.
 
-    x01FIRMCHECK is the safe choice for this: even if it somehow were acted on,
-    the worst case is a redundant version reply.
+    x01FIRMCHECK is the safe choice: acted on, the worst case is a redundant
+    version reply.
     """
     return "\n".join(
         [

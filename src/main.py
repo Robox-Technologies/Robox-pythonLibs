@@ -10,18 +10,15 @@ from communication import (
     flush_outgoing_messages,
 )
 
-# Echo every received line back as a console message. Off by default: it
-# doubles upload traffic and, over BLE, competes with the upload for the same
-# 9600-baud link, which makes the very corruption it would be used to diagnose
-# more likely.
+# Echo received lines back as console messages. Off by default: it doubles
+# upload traffic on the same 9600-baud link it would be used to diagnose.
 DEBUG = False
 
 CURRENT_FIRMWARE_VERSION = "1.0.0"
 PROGRAM_FILENAME = "program.py"
 
-# Backstop on how many lines one interface may hand over per loop iteration, so
-# a flood cannot starve the outgoing queue. The receive buffer is 4KB, so a full
-# drain is around a hundred lines anyway.
+# Backstop so a flood cannot starve the outgoing queue. A full 4KB buffer is
+# around a hundred lines anyway.
 MAX_LINES_PER_POLL = 128
 
 # ----------------------
@@ -30,9 +27,8 @@ MAX_LINES_PER_POLL = 128
 LED = machine.Pin(25, machine.Pin.OUT)
 LED.on()
 
-# None rather than False: `False` made pyright narrow the successful branch to
-# Literal[True] and flag `.calibrate()` as an unknown attribute, which is the
-# reportAttributeAccessIssue noted in docs/VSCODE.md.
+# None, not False: False narrowed the success branch to Literal[True] and made
+# pyright flag .calibrate() as unknown.
 colorSensor = None
 try:
     colorSensor = ColorSensor()
@@ -43,9 +39,8 @@ except Exception:
 # ----------------------
 # Commands
 # ----------------------
-# NOTE: these are matched against every received line, so a line of *user code*
-# equal to one of them is executed instead of being stored. Keep in step with
-# COMMANDS in Robox-Website/src/libs/communication/protocol.ts.
+# Matched against every received line, so user code equal to one of these is
+# executed rather than stored. Keep in step with the website's protocol.ts.
 COMMANDS = {
     "x01FIRMCHECK": "firmware_check",
     "x02BEGINUPLD": "begin_upload",
@@ -83,8 +78,8 @@ if ble.available():
 # ----------------------
 out_file = None
 
-# The RP2040 has exactly one spare core, so a second concurrent run raises
-# instead of starting. Tracked so a double tap on Run reports a useful error.
+# One spare core, so a second concurrent run raises. Tracked so a double tap
+# on Run reports something useful.
 program_running = False
 
 
@@ -121,9 +116,8 @@ def run_user_program(comm):
 def handle_line(comm, line):
     """Act on one received line.
 
-    Split out of the main loop so the loop can drain every buffered line per
-    iteration instead of one, which is what keeps the UART buffer from
-    overflowing mid-upload.
+    Split out of the loop so it can drain every buffered line per iteration,
+    which is what keeps the UART buffer from overflowing mid-upload.
     """
     global out_file, current_communication_method, program_running
 
@@ -134,16 +128,11 @@ def handle_line(comm, line):
 
     command = COMMANDS.get(line.strip())
 
-    # While an upload is in flight, the only command that can legitimately
-    # arrive is end_upload. Anything else is far more likely to be a line of
-    # user code that collides with the command table, so store it rather than
-    # act on it.
-    #
-    # This is what keeps the in-band dispatch from being actively dangerous in
-    # the meantime: without it a program containing `x04STARTPROG` starts the
-    # motors mid-upload, `x02BEGINUPLD` truncates the file, and `x07BOOTLOADER`
-    # drops the board into BOOTSEL. It shrinks the injection surface to a single
-    # string, which the framed protocol then removes entirely.
+    # Mid-upload the only legitimate command is end_upload; anything else is
+    # far more likely to be user code colliding with the table, so store it.
+    # Without this, a program containing x04STARTPROG starts the motors,
+    # x02BEGINUPLD truncates the file, and x07BOOTLOADER drops into BOOTSEL.
+    # Shrinks the injection surface to one string.
     if out_file and command != "end_upload":
         command = None
 
@@ -189,8 +178,8 @@ def handle_line(comm, line):
     # ----------------------
     elif command == "begin_upload":
         if out_file:
-            # A second begin without an end means the first upload never
-            # finished. Close the handle rather than leaking it.
+            # A second begin without an end means the first never finished.
+            # Close the handle rather than leaking it.
             try:
                 out_file.close()
             except Exception:
@@ -240,17 +229,15 @@ def handle_line(comm, line):
     # Bootloader
     # ----------------------
     elif command == "boot_loader":
-        # Previously in the command table with no branch here, so the site's
-        # bootloaderMode() was a silent no-op -- and worse, during an upload the
-        # line fell through to the storage arm and was written into program.py.
+        # Tabled with no branch before now, so bootloaderMode() was a no-op
+        # and mid-upload the line was written into program.py instead.
         machine.bootloader()
 
     # ----------------------
     # Disconnect
     # ----------------------
     elif command == "disconnect_device":
-        # Same story as boot_loader: tabled, unhandled, and stored as program
-        # text if it arrived mid-upload.
+        # Same story as boot_loader: tabled, unhandled, stored as text.
         if comm == current_communication_method:
             current_communication_method = None
 
@@ -278,8 +265,7 @@ while True:
         if comm.sleeping:
             continue
 
-        # Drain everything buffered. Taking a single line per iteration meant a
-        # burst arriving faster than the loop spun sat in the UART buffer until
-        # it overflowed, silently losing bytes mid-line.
+        # Drain everything buffered. One line per iteration meant a fast burst
+        # sat in the UART buffer until it overflowed, losing bytes mid-line.
         for line in comm.read_lines(MAX_LINES_PER_POLL):
             handle_line(comm, line)
