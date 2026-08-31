@@ -9,21 +9,6 @@ DEFAULT = {
 }
 
 
-def remove_infrared(rgb, clear):
-    """Estimate and subtract the infrared common to all three channels.
-
-    Per AMS application note DN40 ("Lux and CCT Calculations using ams
-    Color Sensors"): the R, G and B photodiodes all pass some infrared,
-    but the clear channel's filter passes less of it, so R+G+B
-    overshooting C is the signature of that leakage, split evenly three
-    ways since it affects each channel about equally. Needs no
-    calibration data - it is computed fresh from every reading.
-    """
-    r, g, b = rgb
-    ir = max(0, (r + g + b - clear) / 2)
-    return tuple(max(0, value - ir) for value in rgb)
-
-
 def normalise(value):
     """Accept older firmware's calibration too: a flat [r, g, b], which was
     a white point only, with no black point ever recorded."""

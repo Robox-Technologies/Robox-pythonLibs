@@ -16,7 +16,6 @@ import json
 
 from calibration import DEFAULT as _CALIBRATION_DEFAULT
 from calibration import normalise as _normalise_calibration
-from calibration import remove_infrared as _remove_infrared
 from calibration import scale as _scale_calibration
 
 _COMMAND_BIT = const(0x80)
@@ -315,11 +314,6 @@ class ColorSensor:
         # No light: return black (prevent div 0 error)
         if c == 0:
             return 0, 0, 0
-
-        # Infrared leaks into R, G and B roughly equally and skews their
-        # ratios (e.g. green reading with a false blue tint); this pulls
-        # it back out before the ratios below are taken.
-        r, g, b = _remove_infrared((r, g, b), c)
 
         red = pow((int((r/c) * 256) / 255), 2.5) * c
         green = pow((int((g/c) * 256) / 255), 2.5) * c
