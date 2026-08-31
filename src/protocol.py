@@ -56,7 +56,8 @@ DATA_KINDS = (KIND_DATA, KIND_CONTINUE)
 COMMAND_NAMES = (
     "firmware_check",
     "start_program",
-    "calibrate_color",
+    "calibrate_color_white",
+    "calibrate_color_black",
     "color_mode",
     "reset_device",
     "boot_loader",
