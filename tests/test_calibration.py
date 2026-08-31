@@ -28,6 +28,24 @@ class TestNormalise(unittest.TestCase):
         self.assertEqual(c.normalise("garbage"), c.DEFAULT)
 
 
+class TestRemoveInfrared(unittest.TestCase):
+    def test_no_excess_over_clear_removes_nothing(self):
+        # R+G+B not exceeding C is what a sensor with no IR leakage looks
+        # like: there is nothing to attribute to infrared.
+        self.assertEqual(c.remove_infrared((50, 60, 40), 150), (50, 60, 40))
+        self.assertEqual(c.remove_infrared((50, 60, 40), 200), (50, 60, 40))
+
+    def test_excess_over_clear_is_split_evenly_and_subtracted(self):
+        # R+G+B = 210, C = 150: an excess of 60, so an IR estimate of 30,
+        # subtracted from every channel equally.
+        self.assertEqual(c.remove_infrared((70, 80, 60), 150), (40, 50, 30))
+
+    def test_a_channel_the_estimate_exceeds_clamps_to_zero_not_negative(self):
+        # IR estimate is (10+100+100-50)/2 = 80, which is more red than
+        # there is: red must clamp to 0, not go negative.
+        self.assertEqual(c.remove_infrared((10, 100, 100), 50), (0, 20, 20))
+
+
 class TestScale(unittest.TestCase):
     def calibration(self, white=(200, 200, 200), black=(0, 0, 0)):
         return {"white": list(white), "black": list(black)}
