@@ -4,6 +4,7 @@ import machine
 import time
 
 from roboxlib import ColorSensor
+from colors import closest_color_name
 from communication import (
     USBCommunication,
     BluetoothCommunuication,
@@ -268,7 +269,13 @@ def send_color_if_due():
     last_color_send = now
     r, g, b = colorSensor.readColor()
     color_mode_comm.write_message(
-        "color", {"r": round(r), "g": round(g), "b": round(b)}
+        "color",
+        {
+            "r": round(r),
+            "g": round(g),
+            "b": round(b),
+            "name": closest_color_name((r, g, b)),
+        },
     )
 
 

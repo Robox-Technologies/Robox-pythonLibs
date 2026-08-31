@@ -399,7 +399,9 @@ class TestColorMode(unittest.TestCase):
         drain(ns)
 
         colors = [r["message"] for r in replies(usb) if r["type"] == "color"]
-        self.assertEqual(colors, [{"r": 1, "g": 2, "b": 3}])
+        self.assertEqual(
+            colors, [{"r": 1, "g": 2, "b": 3, "name": "black"}]
+        )
 
         clock[0] += ns["COLOR_MODE_INTERVAL_MS"]
         ns["send_color_if_due"]()
@@ -407,7 +409,11 @@ class TestColorMode(unittest.TestCase):
 
         colors = [r["message"] for r in replies(usb) if r["type"] == "color"]
         self.assertEqual(
-            colors, [{"r": 1, "g": 2, "b": 3}, {"r": 4, "g": 5, "b": 6}]
+            colors,
+            [
+                {"r": 1, "g": 2, "b": 3, "name": "black"},
+                {"r": 4, "g": 5, "b": 6, "name": "black"},
+            ],
         )
 
         # Any other command exits colour mode, even one that does nothing
@@ -421,7 +427,11 @@ class TestColorMode(unittest.TestCase):
 
         colors = [r["message"] for r in replies(usb) if r["type"] == "color"]
         self.assertEqual(
-            colors, [{"r": 1, "g": 2, "b": 3}, {"r": 4, "g": 5, "b": 6}]
+            colors,
+            [
+                {"r": 1, "g": 2, "b": 3, "name": "black"},
+                {"r": 4, "g": 5, "b": 6, "name": "black"},
+            ],
         )
 
 
