@@ -58,6 +58,7 @@ COMMAND_NAMES = (
     "start_program",
     "calibrate_color_white",
     "calibrate_color_black",
+    "reset_color_black",
     "color_mode",
     "reset_device",
     "boot_loader",

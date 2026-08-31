@@ -218,6 +218,14 @@ class ColorSensor:
         self.calibration["black"] = self._extreme_raw_samples(min)
         self._save_calibration()
 
+    def reset_black(self):
+        # Black is optional: a white-only calibration already improves on
+        # the default, so this undoes calibrate_black() on its own, without
+        # touching white, for anyone who calibrated black and changed their
+        # mind, or wants to skip it.
+        self.calibration["black"] = list(_CALIBRATION_DEFAULT["black"])
+        self._save_calibration()
+
     def _extreme_raw_samples(self, extreme, count=_CALIBRATION_SAMPLES):
         """The min or max, per channel, of several raw readings.
 

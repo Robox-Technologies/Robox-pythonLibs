@@ -183,7 +183,8 @@ def dispatch_command(comm, command):
     # Color calibration: two independent points, white and black. Either
     # can be run on its own and improves on the default; running both is
     # what actually fixes accuracy, since a white point alone cannot
-    # correct for the sensor's dark offset.
+    # correct for the sensor's dark offset. Black is optional, so it can
+    # be reset back to the default on its own, without disturbing white.
     # ----------------------
     elif command == "calibrate_color_white":
         if not colorSensor:
@@ -198,6 +199,13 @@ def dispatch_command(comm, command):
         else:
             colorSensor.calibrate_black()
             comm.write_message("calibrated", "black")
+
+    elif command == "reset_color_black":
+        if not colorSensor:
+            comm.write_message("error", "Color sensor not connected")
+        else:
+            colorSensor.reset_black()
+            comm.write_message("calibrated", "black_reset")
 
     # ----------------------
     # Colour mode: periodic readings until something else is sent
