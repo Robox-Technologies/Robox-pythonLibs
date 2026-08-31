@@ -1,6 +1,7 @@
 import sys
 import _thread
 import machine
+import time
 
 from roboxlib import ColorSensor
 from communication import (
@@ -22,6 +23,9 @@ PROGRAM_FILENAME = "program.py"
 # Backstop so a flood cannot starve the outgoing queue. A full 4KB buffer is
 # around a hundred lines anyway.
 MAX_LINES_PER_POLL = 128
+
+# How often a reading goes out while colour mode is active.
+COLOR_MODE_INTERVAL_MS = 250
 
 # ----------------------
 # Hardware setup
@@ -61,6 +65,11 @@ if ble.available():
 # One spare core, so a second concurrent run raises. Tracked so a double tap
 # on Run reports something useful.
 program_running = False
+
+# The interface currently subscribed to periodic colour readings, or None.
+# Not a mode a client can get stuck in: any other command clears it.
+color_mode_comm = None
+last_color_send = 0
 
 # Framed sessions, created on the first frame from an interface.
 framed_sessions = {}
@@ -118,6 +127,13 @@ def dispatch_command(comm, command):
     is gone.
     """
     global current_communication_method, program_running
+    global color_mode_comm, last_color_send
+
+    # Colour mode is a side channel, not a state machine of its own: anything
+    # else the client sends means it has moved on, so it is cleared here
+    # rather than left for the client to remember to turn off.
+    if command != "color_mode":
+        color_mode_comm = None
 
     # ----------------------
     # Firmware check
@@ -173,6 +189,20 @@ def dispatch_command(comm, command):
             comm.write_message("calibrated", "")
 
     # ----------------------
+    # Colour mode: periodic readings until something else is sent
+    # ----------------------
+    elif command == "color_mode":
+        if not colorSensor:
+            comm.write_message("error", "Color sensor not connected")
+        else:
+            color_mode_comm = comm
+            # Due immediately rather than after one interval, so switching the
+            # mode on feels instant.
+            last_color_send = time.ticks_add(
+                time.ticks_ms(), -COLOR_MODE_INTERVAL_MS
+            )
+
+    # ----------------------
     # Reset device
     # ----------------------
     elif command == "reset_device":
@@ -224,6 +254,24 @@ def poll(comm):
             session.flush()
 
 
+def send_color_if_due():
+    """Queue one colour reading, if colour mode is on and it is time."""
+    global last_color_send
+
+    if color_mode_comm is None:
+        return
+
+    now = time.ticks_ms()
+    if time.ticks_diff(now, last_color_send) < COLOR_MODE_INTERVAL_MS:
+        return
+
+    last_color_send = now
+    r, g, b = colorSensor.readColor()
+    color_mode_comm.write_message(
+        "color", {"r": round(r), "g": round(g), "b": round(b)}
+    )
+
+
 # ----------------------
 # Main loop
 # ----------------------
@@ -234,3 +282,5 @@ while True:
     # up unreachable over Bluetooth after a USB session.
     for comm in communications:
         poll(comm)
+
+    send_color_if_due()

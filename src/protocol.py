@@ -57,6 +57,7 @@ COMMAND_NAMES = (
     "firmware_check",
     "start_program",
     "calibrate_color",
+    "color_mode",
     "reset_device",
     "boot_loader",
     "disconnect_device",

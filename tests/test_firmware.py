@@ -42,7 +42,14 @@ class FakeUart:
         self.written.append(data)
 
 
-def load_firmware():
+class RaisingColorSensor:
+    """Stands in for a board with no colour sensor wired up."""
+
+    def __init__(self):
+        raise Exception("no sensor attached")
+
+
+def load_firmware(color_sensor_cls=RaisingColorSensor):
     """Run main.py's setup against stubbed hardware and return its namespace."""
     machine = types.ModuleType("machine")
 
@@ -78,12 +85,7 @@ def load_firmware():
     clock.ticks_diff = lambda later, earlier: later - earlier
 
     roboxlib = types.ModuleType("roboxlib")
-
-    class ColorSensor:
-        def __init__(self):
-            raise Exception("no sensor attached")
-
-    roboxlib.ColorSensor = ColorSensor
+    roboxlib.ColorSensor = color_sensor_cls
 
     saved = {
         name: sys.modules.get(name)
@@ -348,6 +350,79 @@ class TestCommandGating(unittest.TestCase):
         ns["poll"](ble)
 
         self.assertEqual(ns["machine"].resets, 0)
+
+
+class FakeColorSensor:
+    """Returns readings from a fixed queue, one per call."""
+
+    def __init__(self, readings=((1, 2, 3),)):
+        self.readings = list(readings)
+
+    def readColor(self):
+        if len(self.readings) > 1:
+            return self.readings.pop(0)
+        return self.readings[0]
+
+
+class TestColorMode(unittest.TestCase):
+    def test_missing_sensor_reports_an_error_and_never_enters_the_mode(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "color_mode")
+        drain(ns)
+
+        self.assertEqual(
+            [r["message"] for r in replies(usb) if r["type"] == "error"],
+            ["Color sensor not connected"],
+        )
+        self.assertIsNone(ns["color_mode_comm"])
+
+    def test_readings_repeat_on_interval_until_another_command_arrives(self):
+        # USB has no send pacing of its own, so this exercises the mode's
+        # timing logic without BLE's link-rate throttling in the way.
+        ns = load_firmware(color_sensor_cls=lambda: FakeColorSensor(
+            [(1, 2, 3), (4, 5, 6), (7, 8, 9)]
+        ))
+        usb = ns["usb"]
+
+        clock = [0]
+        ns["time"].ticks_ms = lambda: clock[0]
+
+        ns["dispatch_command"](usb, "color_mode")
+        self.assertIs(ns["color_mode_comm"], usb)
+
+        # Due immediately: turning the mode on should not wait one interval.
+        ns["send_color_if_due"]()
+        # Not due again yet.
+        ns["send_color_if_due"]()
+        drain(ns)
+
+        colors = [r["message"] for r in replies(usb) if r["type"] == "color"]
+        self.assertEqual(colors, [{"r": 1, "g": 2, "b": 3}])
+
+        clock[0] += ns["COLOR_MODE_INTERVAL_MS"]
+        ns["send_color_if_due"]()
+        drain(ns)
+
+        colors = [r["message"] for r in replies(usb) if r["type"] == "color"]
+        self.assertEqual(
+            colors, [{"r": 1, "g": 2, "b": 3}, {"r": 4, "g": 5, "b": 6}]
+        )
+
+        # Any other command exits colour mode, even one that does nothing
+        # else observable.
+        ns["dispatch_command"](usb, "disconnect_device")
+        self.assertIsNone(ns["color_mode_comm"])
+
+        clock[0] += ns["COLOR_MODE_INTERVAL_MS"] * 3
+        ns["send_color_if_due"]()
+        drain(ns)
+
+        colors = [r["message"] for r in replies(usb) if r["type"] == "color"]
+        self.assertEqual(
+            colors, [{"r": 1, "g": 2, "b": 3}, {"r": 4, "g": 5, "b": 6}]
+        )
 
 
 class TestOutgoingOrder(unittest.TestCase):
