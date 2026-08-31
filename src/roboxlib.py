@@ -175,8 +175,16 @@ class ColorSensor:
         self.i2c = i2c
         self.address = address
         self._active = False
-        self.integration_time(2.4)
-        self.gain(60)
+        # The sensor's raw count ceiling is cycles * 1024 (capped at 65535):
+        # at the minimum 2.4ms/1 cycle used previously, that ceiling was
+        # only 1024, and combined with the maximum gain it clipped R and G
+        # on anything reasonably bright while B - genuinely less sensitive
+        # on this sensor - did not, which reads as a false yellow tint on
+        # white and skews every other colour the same way. 24ms raises the
+        # ceiling tenfold for a fraction of the 250ms colour-mode budget;
+        # one gain step down still gives plenty of signal in typical use.
+        self.integration_time(24)
+        self.gain(16)
         self.active(True)
         self.loadCalibration()
 
