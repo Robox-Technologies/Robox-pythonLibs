@@ -198,17 +198,32 @@ class ColorSensor:
         self.calibration = _normalise_calibration(config.get(_CALIBRATION_KEY))
 
     def calibrate_white(self):
-        # Calibration, two steps:
-        # 1. Place Ro/Box on a white reference surface, call this.
-        # 2. Place Ro/Box on a black reference (or block all light reaching
-        #    the sensor), call calibrate_black().
-        # Either step alone still improves on the default; both together is
-        # what gives accurate readings across the full brightness range.
+        # White/black is a per-channel gain+offset calibration: better than
+        # nothing, but it cannot correct crosstalk between channels (e.g.
+        # green bleeding into blue and reading as cyan). calibrate_red/
+        # green/blue below build a correction matrix that can.
         self.calibration["white"] = self._extreme_raw_samples(max)
         self._save_calibration()
 
     def calibrate_black(self):
         self.calibration["black"] = self._extreme_raw_samples(min)
+        self._save_calibration()
+
+    def calibrate_red(self):
+        # Full colour calibration, three steps: place Ro/Box in turn on red,
+        # green and blue reference surfaces and call the matching method for
+        # each. Together with calibrate_black(), this builds a correction
+        # matrix that fixes crosstalk between channels - something a white
+        # point alone cannot do.
+        self.calibration["red"] = self._average_raw_samples()
+        self._save_calibration()
+
+    def calibrate_green(self):
+        self.calibration["green"] = self._average_raw_samples()
+        self._save_calibration()
+
+    def calibrate_blue(self):
+        self.calibration["blue"] = self._average_raw_samples()
         self._save_calibration()
 
     def _extreme_raw_samples(self, extreme, count=_CALIBRATION_SAMPLES):
@@ -224,14 +239,22 @@ class ColorSensor:
         samples = [self.readColor(raw=True) for _ in range(count)]
         return [extreme(channel) for channel in zip(*samples)]
 
+    def _average_raw_samples(self, count=_CALIBRATION_SAMPLES):
+        """The mean, per channel, of several raw readings.
+
+        Unlike the white/black extremes, a red/green/blue reference point
+        is meant to be a typical reading of that surface, so a stray
+        flicker should be averaged out rather than erred around.
+        """
+        samples = [self.readColor(raw=True) for _ in range(count)]
+        return [sum(channel) / len(channel) for channel in zip(*samples)]
+
     def _save_calibration(self):
         with open('config.json', 'w') as configFile:
             json.dump({ _CALIBRATION_KEY: self.calibration }, configFile)
 
     def resetCalibration(self):
-        self.calibration = {
-            name: list(values) for name, values in _CALIBRATION_DEFAULT.items()
-        }
+        self.calibration = _normalise_calibration(None)
         self._save_calibration()
 
     def active(self, value=None):
