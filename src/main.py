@@ -35,7 +35,7 @@ LED = machine.Pin(25, machine.Pin.OUT)
 LED.on()
 
 # None, not False: False narrowed the success branch to Literal[True] and made
-# pyright flag .calibrate() as unknown.
+# pyright flag .calibrate_white() as unknown.
 colorSensor = None
 try:
     colorSensor = ColorSensor()
@@ -180,14 +180,24 @@ def dispatch_command(comm, command):
         comm.write_message("download", "")
 
     # ----------------------
-    # Color calibration
+    # Color calibration: two independent points, white and black. Either
+    # can be run on its own and improves on the default; running both is
+    # what actually fixes accuracy, since a white point alone cannot
+    # correct for the sensor's dark offset.
     # ----------------------
-    elif command == "calibrate_color":
+    elif command == "calibrate_color_white":
         if not colorSensor:
             comm.write_message("error", "Color sensor not connected")
         else:
-            colorSensor.calibrate()
-            comm.write_message("calibrated", "")
+            colorSensor.calibrate_white()
+            comm.write_message("calibrated", "white")
+
+    elif command == "calibrate_color_black":
+        if not colorSensor:
+            comm.write_message("error", "Color sensor not connected")
+        else:
+            colorSensor.calibrate_black()
+            comm.write_message("calibrated", "black")
 
     # ----------------------
     # Colour mode: periodic readings until something else is sent

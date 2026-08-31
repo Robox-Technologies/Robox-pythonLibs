@@ -357,11 +357,48 @@ class FakeColorSensor:
 
     def __init__(self, readings=((1, 2, 3),)):
         self.readings = list(readings)
+        self.calibrated = []
 
     def readColor(self):
         if len(self.readings) > 1:
             return self.readings.pop(0)
         return self.readings[0]
+
+    def calibrate_white(self):
+        self.calibrated.append("white")
+
+    def calibrate_black(self):
+        self.calibrated.append("black")
+
+
+class TestColorCalibration(unittest.TestCase):
+    def test_missing_sensor_reports_an_error_for_either_point(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "calibrate_color")
+        ns["dispatch_command"](usb, "calibrate_color_black")
+        drain(ns)
+
+        self.assertEqual(
+            [r["message"] for r in replies(usb) if r["type"] == "error"],
+            ["Color sensor not connected"] * 2,
+        )
+
+    def test_each_command_calibrates_its_own_point(self):
+        sensor = FakeColorSensor()
+        ns = load_firmware(color_sensor_cls=lambda: sensor)
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "calibrate_color")
+        ns["dispatch_command"](usb, "calibrate_color_black")
+        drain(ns)
+
+        self.assertEqual(sensor.calibrated, ["white", "black"])
+        self.assertEqual(
+            [r["message"] for r in replies(usb) if r["type"] == "calibrated"],
+            ["white", "black"],
+        )
 
 
 class TestColorMode(unittest.TestCase):

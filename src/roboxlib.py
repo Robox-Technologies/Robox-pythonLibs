@@ -14,6 +14,10 @@ from utime import sleep, sleep_us, ticks_diff, ticks_ms
 import ustruct
 import json
 
+from calibration import DEFAULT as _CALIBRATION_DEFAULT
+from calibration import normalise as _normalise_calibration
+from calibration import scale as _scale_calibration
+
 _COMMAND_BIT = const(0x80)
 
 _REGISTER_ENABLE = const(0x00)
@@ -35,7 +39,7 @@ _ENABLE_PON = const(0x01)
 _GAINS = (1, 4, 16, 60)
 
 _CALIBRATION_KEY = "colorCalibration"
-_CALIBRATION_DEFAULT = [160.14, 87.63174, 62.94521]
+_CALIBRATION_SAMPLES = 10
 
 _MIN_S = 1300
 _MAX_S = 8500
@@ -191,29 +195,44 @@ class ColorSensor:
             with open('config.json', 'w') as configFile:
                 json.dump(config, configFile)
 
-        self.calibration = config[_CALIBRATION_KEY]
+        self.calibration = _normalise_calibration(config.get(_CALIBRATION_KEY))
 
-    def calibrate(self):
-        # Calibration steps:
-        # 1. Place Ro/Box on white calibration surface
-        # 2. Run this calibration method
-        # 3. Calibration will automatically save. Enjoy!
-        maxR = maxG = maxB = 0
+    def calibrate_white(self):
+        # Calibration, two steps:
+        # 1. Place Ro/Box on a white reference surface, call this.
+        # 2. Place Ro/Box on a black reference (or block all light reaching
+        #    the sensor), call calibrate_black().
+        # Either step alone still improves on the default; both together is
+        # what gives accurate readings across the full brightness range.
+        self.calibration["white"] = self._extreme_raw_samples(max)
+        self._save_calibration()
 
-        for _ in range(10):
-            r, g, b = self.readColor(raw=True)
+    def calibrate_black(self):
+        self.calibration["black"] = self._extreme_raw_samples(min)
+        self._save_calibration()
 
-            maxR = max(r, maxR)
-            maxG = max(g, maxG)
-            maxB = max(b, maxB)
+    def _extreme_raw_samples(self, extreme, count=_CALIBRATION_SAMPLES):
+        """The min or max, per channel, of several raw readings.
 
-        self.calibration = [maxR, maxG, maxB]
+        Not the average: for the white point, a brief dip in ambient light
+        must not lower it below what the sensor can genuinely see, or real
+        bright readings later clip to 255 and lose the top of the range.
+        Symmetrically, the black point must not be nudged up by a stray
+        flicker, or real dark readings clip to 0. `extreme` is `max` for
+        white, `min` for black, each erring the safe way.
+        """
+        samples = [self.readColor(raw=True) for _ in range(count)]
+        return [extreme(channel) for channel in zip(*samples)]
+
+    def _save_calibration(self):
         with open('config.json', 'w') as configFile:
             json.dump({ _CALIBRATION_KEY: self.calibration }, configFile)
 
     def resetCalibration(self):
-        with open('config.json', 'w') as configFile:
-            json.dump({ _CALIBRATION_KEY: _CALIBRATION_DEFAULT }, configFile)
+        self.calibration = {
+            name: list(values) for name, values in _CALIBRATION_DEFAULT.items()
+        }
+        self._save_calibration()
 
     def active(self, value=None):
         if value is None:
@@ -303,22 +322,7 @@ class ColorSensor:
         return red, green, blue
 
     def _calibrated_rgb(self, rgb):
-        r, g, b = rgb
-        calibratedR = r/self.calibration[0]
-        calibratedG = g/self.calibration[1]
-        calibratedB = b/self.calibration[2]
-        maxClr = max(max(max(calibratedR, calibratedG), calibratedB), 1)
-        clrFac = 255/maxClr
-        calibratedR = calibratedR * clrFac
-        calibratedG = calibratedG * clrFac
-        calibratedB = calibratedB * clrFac
-        return self._boost_contrast([calibratedR, calibratedG, calibratedB])
-
-    def _boost_contrast(self, rgb, factor=2):
-        h, s, v = rgb_to_hsv(*rgb)
-        s = min(s*factor, 1)
-
-        return hsv_to_rgb(h, s, v)
+        return _scale_calibration(rgb, self.calibration)
 
 def rgb_to_hsv(r, g, b):
     r, g, b = r / 255.0, g / 255.0, b / 255.0  # Normalize to [0,1]
