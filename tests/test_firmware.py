@@ -370,30 +370,19 @@ class FakeColorSensor:
     def calibrate_black(self):
         self.calibrated.append("black")
 
-    def calibrate_red(self):
-        self.calibrated.append("red")
-
-    def calibrate_green(self):
-        self.calibrated.append("green")
-
-    def calibrate_blue(self):
-        self.calibrated.append("blue")
-
 
 class TestColorCalibration(unittest.TestCase):
-    POINTS = ("white", "black", "red", "green", "blue")
-
-    def test_missing_sensor_reports_an_error_for_every_point(self):
+    def test_missing_sensor_reports_an_error_for_either_point(self):
         ns = load_firmware()
         usb = ns["usb"]
 
-        for point in self.POINTS:
-            ns["dispatch_command"](usb, "calibrate_color_" + point)
+        ns["dispatch_command"](usb, "calibrate_color_white")
+        ns["dispatch_command"](usb, "calibrate_color_black")
         drain(ns)
 
         self.assertEqual(
             [r["message"] for r in replies(usb) if r["type"] == "error"],
-            ["Color sensor not connected"] * len(self.POINTS),
+            ["Color sensor not connected"] * 2,
         )
 
     def test_each_command_calibrates_its_own_point(self):
@@ -401,14 +390,14 @@ class TestColorCalibration(unittest.TestCase):
         ns = load_firmware(color_sensor_cls=lambda: sensor)
         usb = ns["usb"]
 
-        for point in self.POINTS:
-            ns["dispatch_command"](usb, "calibrate_color_" + point)
+        ns["dispatch_command"](usb, "calibrate_color_white")
+        ns["dispatch_command"](usb, "calibrate_color_black")
         drain(ns)
 
-        self.assertEqual(sensor.calibrated, list(self.POINTS))
+        self.assertEqual(sensor.calibrated, ["white", "black"])
         self.assertEqual(
             [r["message"] for r in replies(usb) if r["type"] == "calibrated"],
-            list(self.POINTS),
+            ["white", "black"],
         )
 
 

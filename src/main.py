@@ -180,11 +180,10 @@ def dispatch_command(comm, command):
         comm.write_message("download", "")
 
     # ----------------------
-    # Color calibration. white/black is a per-channel gain+offset fix: any
-    # one command improves on the default, and running both fixes the
-    # sensor's dark offset too. red/green/blue build a correction matrix on
-    # top of that, and are what actually fixes crosstalk between channels -
-    # e.g. green reading as cyan - which white/black alone cannot.
+    # Color calibration: two independent points, white and black. Either
+    # can be run on its own and improves on the default; running both is
+    # what actually fixes accuracy, since a white point alone cannot
+    # correct for the sensor's dark offset.
     # ----------------------
     elif command == "calibrate_color_white":
         if not colorSensor:
@@ -199,27 +198,6 @@ def dispatch_command(comm, command):
         else:
             colorSensor.calibrate_black()
             comm.write_message("calibrated", "black")
-
-    elif command == "calibrate_color_red":
-        if not colorSensor:
-            comm.write_message("error", "Color sensor not connected")
-        else:
-            colorSensor.calibrate_red()
-            comm.write_message("calibrated", "red")
-
-    elif command == "calibrate_color_green":
-        if not colorSensor:
-            comm.write_message("error", "Color sensor not connected")
-        else:
-            colorSensor.calibrate_green()
-            comm.write_message("calibrated", "green")
-
-    elif command == "calibrate_color_blue":
-        if not colorSensor:
-            comm.write_message("error", "Color sensor not connected")
-        else:
-            colorSensor.calibrate_blue()
-            comm.write_message("calibrated", "blue")
 
     # ----------------------
     # Colour mode: periodic readings until something else is sent
