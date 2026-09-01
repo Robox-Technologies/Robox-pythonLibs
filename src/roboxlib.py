@@ -17,6 +17,9 @@ import json
 from calibration import DEFAULT as _CALIBRATION_DEFAULT
 from calibration import normalise as _normalise_calibration
 from calibration import scale as _scale_calibration
+from colors import STANDARD_COLORS as _STANDARD_COLORS
+from matrix import fit as _fit_matrix
+from matrix import apply as _apply_matrix
 
 _COMMAND_BIT = const(0x80)
 
@@ -39,6 +42,7 @@ _ENABLE_PON = const(0x01)
 _GAINS = (1, 4, 16, 60)
 
 _CALIBRATION_KEY = "colorCalibration"
+_SAMPLES_KEY = "colorSamples"
 _CALIBRATION_SAMPLES = 10
 
 _MIN_S = 1300
@@ -175,8 +179,15 @@ class ColorSensor:
         self.i2c = i2c
         self.address = address
         self._active = False
-        self.integration_time(2.4)
-        self.gain(60)
+        # The sensor's raw count ceiling is cycles * 1024 (capped at 65535):
+        # at the minimum 2.4ms/1 cycle used previously, that ceiling was
+        # only 1024, and combined with the maximum gain it clipped the more
+        # sensitive channels on anything reasonably bright while a less
+        # sensitive one did not, skewing every colour reading. 24ms raises
+        # the ceiling tenfold for a fraction of the 250ms colour-mode
+        # budget; one gain step down still leaves plenty of signal.
+        self.integration_time(24)
+        self.gain(16)
         self.active(True)
         self.loadCalibration()
 
@@ -186,7 +197,7 @@ class ColorSensor:
 
     def loadCalibration(self):
         # Load calibration data
-        config = { _CALIBRATION_KEY: _CALIBRATION_DEFAULT }
+        config = { _CALIBRATION_KEY: _CALIBRATION_DEFAULT, _SAMPLES_KEY: {} }
 
         try:
             with open('config.json', 'r') as configFile:
@@ -196,6 +207,12 @@ class ColorSensor:
                 json.dump(config, configFile)
 
         self.calibration = _normalise_calibration(config.get(_CALIBRATION_KEY))
+        # Raw readings, one per calibrated hue: not persisted pre-scaled,
+        # because they now feed the matrix fit below, which needs the raw
+        # measurement a swatch actually produced, not an already-corrected
+        # one.
+        self.samples = dict(config.get(_SAMPLES_KEY) or {})
+        self._recompute()
 
     def calibrate_white(self):
         # Calibration, two steps:
@@ -204,12 +221,71 @@ class ColorSensor:
         #    the sensor), call calibrate_black().
         # Either step alone still improves on the default; both together is
         # what gives accurate readings across the full brightness range.
+        # White also anchors the colour correction matrix below, once
+        # enough hues are calibrated to fit one.
         self.calibration["white"] = self._extreme_raw_samples(max)
-        self._save_calibration()
+        self._recalibrate()
 
     def calibrate_black(self):
         self.calibration["black"] = self._extreme_raw_samples(min)
-        self._save_calibration()
+        self._recalibrate()
+
+    def reset_white(self):
+        self.calibration["white"] = list(_CALIBRATION_DEFAULT["white"])
+        self._recalibrate()
+
+    def reset_black(self):
+        self.calibration["black"] = list(_CALIBRATION_DEFAULT["black"])
+        self._recalibrate()
+
+    def calibrate_palette(self, name):
+        # Which colour this is is decided by the caller (the fixed set of
+        # commands the protocol allows), not read from the reading itself:
+        # this only ever runs while Ro/Box sits on a known reference swatch
+        # of `name`. Unlike white/black, a sample is not an extreme of the
+        # sensor's range but a typical mid-range reading, so this averages
+        # several raw readings instead of taking a min/max: one stray
+        # sample should not drag where the colour is expected to sit.
+        self.samples[name] = self._average_raw_samples()
+        self._recalibrate()
+
+    def reset_palette(self, name):
+        # Simply absent, same as any colour that was never calibrated: it
+        # no longer contributes a point to the matrix fit below, and
+        # closest_color_name() already falls back to STANDARD_COLORS for
+        # any name missing from the derived palette.
+        self.samples.pop(name, None)
+        self._recalibrate()
+
+    def _recalibrate(self):
+        self._recompute()
+        self._save_config()
+
+    def _recompute(self):
+        """Refit the correction matrix from whatever is calibrated right
+        now, then re-derive the palette through it.
+
+        Both are recomputed from scratch rather than adjusted incrementally,
+        because every point's fitted matrix changes when any one point
+        does: there's no cheaper way to keep them consistent.
+        """
+        black = self.calibration["black"]
+        white = self.calibration["white"]
+
+        def subtract_black(raw):
+            return [raw[i] - black[i] for i in range(3)]
+
+        # Black is not a fit point: subtracting it first makes (0, 0, 0)
+        # map to (0, 0, 0) under any matrix, so it would only add equations
+        # that are already trivially satisfied.
+        points = [(subtract_black(white), list(_STANDARD_COLORS["white"]))]
+        for name, raw in self.samples.items():
+            points.append((subtract_black(raw), list(_STANDARD_COLORS[name])))
+
+        self._matrix = _fit_matrix(points)
+        self.palette = {
+            name: self._calibrated_rgb(raw) for name, raw in self.samples.items()
+        }
 
     def _extreme_raw_samples(self, extreme, count=_CALIBRATION_SAMPLES):
         """The min or max, per channel, of several raw readings.
@@ -224,15 +300,24 @@ class ColorSensor:
         samples = [self.readColor(raw=True) for _ in range(count)]
         return [extreme(channel) for channel in zip(*samples)]
 
-    def _save_calibration(self):
+    def _average_raw_samples(self, count=_CALIBRATION_SAMPLES):
+        samples = [self.readColor(raw=True) for _ in range(count)]
+        return [sum(channel) / count for channel in zip(*samples)]
+
+    def _save_config(self):
+        # self.palette and self._matrix are not saved: both are cheaply
+        # derived from self.calibration and self.samples, which are.
         with open('config.json', 'w') as configFile:
-            json.dump({ _CALIBRATION_KEY: self.calibration }, configFile)
+            json.dump(
+                { _CALIBRATION_KEY: self.calibration, _SAMPLES_KEY: self.samples },
+                configFile,
+            )
 
     def resetCalibration(self):
         self.calibration = {
             name: list(values) for name, values in _CALIBRATION_DEFAULT.items()
         }
-        self._save_calibration()
+        self._recalibrate()
 
     def active(self, value=None):
         if value is None:
@@ -322,7 +407,16 @@ class ColorSensor:
         return red, green, blue
 
     def _calibrated_rgb(self, rgb):
-        return _scale_calibration(rgb, self.calibration)
+        # The fitted matrix, once there are enough calibrated hues to
+        # determine it, corrects cross-talk between channels that a plain
+        # per-channel scale cannot; until then this falls back to that
+        # scale, which is exactly what calibrate_white/black alone gave
+        # before the matrix existed.
+        if self._matrix is None:
+            return _scale_calibration(rgb, self.calibration)
+        black = self.calibration["black"]
+        subtracted = [rgb[i] - black[i] for i in range(3)]
+        return _apply_matrix(self._matrix, subtracted)
 
 def rgb_to_hsv(r, g, b):
     r, g, b = r / 255.0, g / 255.0, b / 255.0  # Normalize to [0,1]

@@ -180,24 +180,47 @@ def dispatch_command(comm, command):
         comm.write_message("download", "")
 
     # ----------------------
-    # Color calibration: two independent points, white and black. Either
-    # can be run on its own and improves on the default; running both is
-    # what actually fixes accuracy, since a white point alone cannot
-    # correct for the sensor's dark offset.
+    # Colour calibration: one command per preselected colour, each with its
+    # own reset, used by colour mode to name a reading against swatches
+    # actually seen by this sensor rather than an idealised RGB guess. Each
+    # colour calibrates and resets independently; the whitelist in
+    # protocol.py is what limits `command` to a real colour name here.
+    #
+    # White and black are not stored like the others: they are the
+    # sensor's own brightness extremes, so calibrating (or resetting) them
+    # instead acts on the white/black points the rest of readColor() scales
+    # against (a white point alone cannot correct the sensor's dark offset,
+    # which is why both matter). A point captured after that will already
+    # land near (255,255,255) or (0,0,0) for a genuine white/black swatch,
+    # so no separate entry is needed for either.
     # ----------------------
-    elif command == "calibrate_color_white":
+    elif command.startswith("calibrate_color_"):
+        name = command[len("calibrate_color_"):]
         if not colorSensor:
             comm.write_message("error", "Color sensor not connected")
-        else:
+        elif name == "white":
             colorSensor.calibrate_white()
             comm.write_message("calibrated", "white")
-
-    elif command == "calibrate_color_black":
-        if not colorSensor:
-            comm.write_message("error", "Color sensor not connected")
-        else:
+        elif name == "black":
             colorSensor.calibrate_black()
             comm.write_message("calibrated", "black")
+        else:
+            colorSensor.calibrate_palette(name)
+            comm.write_message("calibrated", name)
+
+    elif command.startswith("reset_color_"):
+        name = command[len("reset_color_"):]
+        if not colorSensor:
+            comm.write_message("error", "Color sensor not connected")
+        elif name == "white":
+            colorSensor.reset_white()
+            comm.write_message("calibrated", "white_reset")
+        elif name == "black":
+            colorSensor.reset_black()
+            comm.write_message("calibrated", "black_reset")
+        else:
+            colorSensor.reset_palette(name)
+            comm.write_message("calibrated", name + "_reset")
 
     # ----------------------
     # Colour mode: periodic readings until something else is sent
@@ -284,7 +307,7 @@ def send_color_if_due():
             "r": round(r),
             "g": round(g),
             "b": round(b),
-            "name": closest_color_name((r, g, b)),
+            "name": closest_color_name((r, g, b), colorSensor.palette),
         },
     )
 

@@ -358,6 +358,7 @@ class FakeColorSensor:
     def __init__(self, readings=((1, 2, 3),)):
         self.readings = list(readings)
         self.calibrated = []
+        self.palette = {}
 
     def readColor(self):
         if len(self.readings) > 1:
@@ -370,34 +371,100 @@ class FakeColorSensor:
     def calibrate_black(self):
         self.calibrated.append("black")
 
+    def reset_white(self):
+        self.calibrated.append("white_reset")
+
+    def reset_black(self):
+        self.calibrated.append("black_reset")
+
+    def calibrate_palette(self, name):
+        self.calibrated.append(name)
+
+    def reset_palette(self, name):
+        self.calibrated.append(name + "_reset")
+
 
 class TestColorCalibration(unittest.TestCase):
-    def test_missing_sensor_reports_an_error_for_either_point(self):
+    COMMANDS = (
+        "calibrate_color_red",
+        "calibrate_color_orange",
+        "calibrate_color_yellow",
+        "calibrate_color_green",
+        "calibrate_color_blue",
+        "calibrate_color_purple",
+        "calibrate_color_black",
+        "calibrate_color_white",
+        "reset_color_red",
+        "reset_color_orange",
+        "reset_color_yellow",
+        "reset_color_green",
+        "reset_color_blue",
+        "reset_color_purple",
+        "reset_color_black",
+        "reset_color_white",
+    )
+    # *_black/*_white run the sensor's brightness-extreme methods instead of
+    # storing/clearing a palette point like every other colour does, but the
+    # sensor call and the reply happen to land on the same string either way.
+    EXPECTED = (
+        "red",
+        "orange",
+        "yellow",
+        "green",
+        "blue",
+        "purple",
+        "black",
+        "white",
+        "red_reset",
+        "orange_reset",
+        "yellow_reset",
+        "green_reset",
+        "blue_reset",
+        "purple_reset",
+        "black_reset",
+        "white_reset",
+    )
+
+    def test_missing_sensor_reports_an_error_for_every_command(self):
         ns = load_firmware()
         usb = ns["usb"]
 
-        ns["dispatch_command"](usb, "calibrate_color")
-        ns["dispatch_command"](usb, "calibrate_color_black")
+        for command in self.COMMANDS:
+            ns["dispatch_command"](usb, command)
         drain(ns)
 
         self.assertEqual(
             [r["message"] for r in replies(usb) if r["type"] == "error"],
-            ["Color sensor not connected"] * 2,
+            ["Color sensor not connected"] * len(self.COMMANDS),
         )
 
-    def test_each_command_calibrates_its_own_point(self):
+    def test_each_command_acts_on_its_own_point(self):
         sensor = FakeColorSensor()
         ns = load_firmware(color_sensor_cls=lambda: sensor)
         usb = ns["usb"]
 
-        ns["dispatch_command"](usb, "calibrate_color")
-        ns["dispatch_command"](usb, "calibrate_color_black")
+        for command in self.COMMANDS:
+            ns["dispatch_command"](usb, command)
         drain(ns)
 
-        self.assertEqual(sensor.calibrated, ["white", "black"])
+        self.assertEqual(sensor.calibrated, list(self.EXPECTED))
         self.assertEqual(
             [r["message"] for r in replies(usb) if r["type"] == "calibrated"],
-            ["white", "black"],
+            list(self.EXPECTED),
+        )
+
+    def test_an_uncalibrated_colour_is_rejected_by_the_frame_layer(self):
+        """The whitelist in protocol.py, not the dispatcher, is the gate."""
+        ns = load_firmware()
+        ble = ns["ble"]
+
+        ble.uart.feed(command_frame("calibrate_color_turquoise"))
+        ns["poll"](ble)
+        drain(ns)
+
+        self.assertEqual(
+            [r["message"] for r in replies(ble) if r["type"] == "error"],
+            ["Unknown command: calibrate_color_turquoise"],
         )
 
 
@@ -469,6 +536,25 @@ class TestColorMode(unittest.TestCase):
                 {"r": 1, "g": 2, "b": 3, "name": "black"},
                 {"r": 4, "g": 5, "b": 6, "name": "black"},
             ],
+        )
+
+    def test_a_calibrated_palette_point_wins_over_the_default_guess(self):
+        # (100, 50, 10) is nearer STANDARD_COLORS' idealised "orange" than
+        # "red" by chromaticity; calibrating "red" to this exact reading
+        # (as if a real red swatch reads this way on this sensor) has to
+        # flip the match, or the calibration is not doing anything.
+        sensor = FakeColorSensor([(100, 50, 10)])
+        sensor.palette = {"red": (100, 50, 10)}
+        ns = load_firmware(color_sensor_cls=lambda: sensor)
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "color_mode")
+        ns["send_color_if_due"]()
+        drain(ns)
+
+        colors = [r["message"] for r in replies(usb) if r["type"] == "color"]
+        self.assertEqual(
+            colors, [{"r": 100, "g": 50, "b": 10, "name": "red"}]
         )
 
 

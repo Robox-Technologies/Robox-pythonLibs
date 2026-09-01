@@ -168,7 +168,7 @@ class TestFrameReader(unittest.TestCase):
 
     def test_corrupt_checksum_is_reported_not_delivered(self):
         frame = bytearray(p.encode_frame(1, p.KIND_DATA, b"payload"))
-        frame[HEADER := p.HEADER_LENGTH] ^= 0xFF  # flip a payload byte
+        frame[p.HEADER_LENGTH] ^= 0xFF  # flip a payload byte
         frames, damage = self.reader.feed(bytes(frame))
         self.assertEqual(frames, [])
         self.assertEqual(damage, 1)
