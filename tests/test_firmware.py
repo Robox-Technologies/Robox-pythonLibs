@@ -94,6 +94,44 @@ def load_firmware(color_sensor_cls=RaisingColorSensor):
         else 0.0
     )
 
+    roboxlib.reverse_state = [False, False]
+
+    def load_motor_reverse(index):
+        return roboxlib.reverse_state[index]
+
+    def save_motor_reverse(index, value):
+        roboxlib.reverse_state[index] = bool(value)
+
+    roboxlib.load_motor_reverse = load_motor_reverse
+    roboxlib.save_motor_reverse = save_motor_reverse
+
+    roboxlib.swap_state = [False]
+
+    def load_motor_swap():
+        return roboxlib.swap_state[0]
+
+    def save_motor_swap(value):
+        roboxlib.swap_state[0] = bool(value)
+
+    roboxlib.load_motor_swap = load_motor_swap
+    roboxlib.save_motor_swap = save_motor_swap
+
+    roboxlib.motor_runs = []
+
+    class FakeMotors:
+        """Stands in for roboxlib.Motors. Records what run_motors was told
+        to do, rather than reapplying the calibration math, since that math
+        is roboxlib's own responsibility and not what dispatch_command tests
+        are checking here."""
+
+        def run_motors(self, left_speed, right_speed):
+            roboxlib.motor_runs.append((left_speed, right_speed))
+
+        def stop_motors(self):
+            self.run_motors(0, 0)
+
+    roboxlib.Motors = FakeMotors
+
     saved = {
         name: sys.modules.get(name)
         for name in ("machine", "roboxlib", "time")
@@ -147,16 +185,23 @@ def replies(comm):
 
     Fed in chunks, as a link delivers them. The reader caps its buffer at 4KB
     and resyncs past an overflow, so handing it a long stream in one go quietly
-    discards most of it.
+    discards most of it. A message longer than one payload arrives as
+    CONTINUE frames followed by a REPLY frame, same as a long upload does in
+    the other direction, so the pieces are reassembled here rather than
+    reading the REPLY frame alone.
     """
     out = []
     reader = p.FrameReader()
     raw = sent_bytes(comm)
+    partial = b""
     for offset in range(0, len(raw), 512):
         frames, _ = reader.feed(raw[offset:offset + 512])
         for frame in frames:
-            if frame.kind == p.KIND_REPLY:
-                out.append(json.loads(frame.text()))
+            if frame.kind == p.KIND_CONTINUE:
+                partial += frame.payload
+            elif frame.kind == p.KIND_REPLY:
+                out.append(json.loads((partial + frame.payload).decode()))
+                partial = b""
     return out
 
 
@@ -529,7 +574,16 @@ class TestMotorCalibration(unittest.TestCase):
 
         self.assertEqual(
             [r["message"] for r in replies(usb) if r["type"] == "calibration"],
-            [{"name": "motors", "value": 0.0}],
+            [
+                {
+                    "name": "motors",
+                    "value": {
+                        "bias": 0.0,
+                        "reverse": [False, False],
+                        "swap": False,
+                    },
+                }
+            ],
         )
 
     def test_get_returns_the_persisted_bias(self):
@@ -542,7 +596,135 @@ class TestMotorCalibration(unittest.TestCase):
 
         self.assertEqual(
             [r["message"] for r in replies(usb) if r["type"] == "calibration"],
-            [{"name": "motors", "value": -0.35}],
+            [
+                {
+                    "name": "motors",
+                    "value": {
+                        "bias": -0.35,
+                        "reverse": [False, False],
+                        "swap": False,
+                    },
+                }
+            ],
+        )
+
+
+class TestMotorReversalAndSwap(unittest.TestCase):
+    def _motor_calibration(self, ns, usb):
+        ns["dispatch_command"](usb, "get_calibration_motors")
+        drain(ns)
+        return [
+            r["message"] for r in replies(usb) if r["type"] == "calibration"
+        ][-1]["value"]
+
+    def test_reverse_0_is_set_absolutely_and_acknowledged(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "reverse_motor_0_1")
+        self.assertEqual(
+            self._motor_calibration(ns, usb)["reverse"], [True, False]
+        )
+
+        # Setting the same value again is a no-op, not a flip: this is what
+        # makes the command safe to resend if an ACK is lost.
+        ns["dispatch_command"](usb, "reverse_motor_0_1")
+        self.assertEqual(
+            self._motor_calibration(ns, usb)["reverse"], [True, False]
+        )
+
+        ns["dispatch_command"](usb, "reverse_motor_0_0")
+        self.assertEqual(
+            self._motor_calibration(ns, usb)["reverse"], [False, False]
+        )
+
+        self.assertEqual(
+            [r["message"] for r in replies(usb) if r["type"] == "calibrated"],
+            ["reverse_0", "reverse_0", "reverse_0"],
+        )
+
+    def test_reverse_1_is_set_independently_of_reverse_0(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "reverse_motor_1_1")
+        self.assertEqual(
+            self._motor_calibration(ns, usb)["reverse"], [False, True]
+        )
+
+    def test_swap_is_set_absolutely_and_acknowledged(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "swap_motors_1")
+        self.assertEqual(self._motor_calibration(ns, usb)["swap"], True)
+
+        ns["dispatch_command"](usb, "swap_motors_1")
+        self.assertEqual(self._motor_calibration(ns, usb)["swap"], True)
+
+        ns["dispatch_command"](usb, "swap_motors_0")
+        self.assertEqual(self._motor_calibration(ns, usb)["swap"], False)
+
+        self.assertEqual(
+            [r["message"] for r in replies(usb) if r["type"] == "calibrated"],
+            ["swap", "swap", "swap"],
+        )
+
+    def test_get_returns_the_defaults_when_never_set(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        self.assertEqual(
+            self._motor_calibration(ns, usb),
+            {"bias": 0.0, "reverse": [False, False], "swap": False},
+        )
+
+
+class TestMotorTestDrive(unittest.TestCase):
+    def test_run_motor_0_drives_only_the_left_side(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "run_motor_0")
+
+        self.assertEqual(
+            ns["roboxlib"].motor_runs, [(ns["TEST_MOTOR_SPEED"], 0)]
+        )
+
+    def test_run_motor_1_drives_only_the_right_side(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "run_motor_1")
+
+        self.assertEqual(
+            ns["roboxlib"].motor_runs, [(0, ns["TEST_MOTOR_SPEED"])]
+        )
+
+    def test_stop_motors_stops_both(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "run_motor_0")
+        ns["dispatch_command"](usb, "stop_motors")
+
+        self.assertEqual(
+            ns["roboxlib"].motor_runs,
+            [(ns["TEST_MOTOR_SPEED"], 0), (0, 0)],
+        )
+
+    def test_starting_a_program_stops_a_test_drive_first(self):
+        """A left-running test motor must not fight the program for the pins,
+        even when the start attempt itself is about to be refused."""
+        ns = load_firmware()
+        ble = ns["ble"]
+
+        ns["dispatch_command"](ble, "run_motor_0")
+        ns["dispatch_command"](ble, "start_program")
+
+        self.assertEqual(
+            ns["roboxlib"].motor_runs,
+            [(ns["TEST_MOTOR_SPEED"], 0), (0, 0)],
         )
 
 

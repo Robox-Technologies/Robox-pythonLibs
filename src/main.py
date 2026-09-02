@@ -3,7 +3,16 @@ import _thread
 import machine
 import time
 
-from roboxlib import ColorSensor, load_motor_calibration, save_motor_calibration
+from roboxlib import (
+    ColorSensor,
+    Motors,
+    load_motor_calibration,
+    load_motor_reverse,
+    load_motor_swap,
+    save_motor_calibration,
+    save_motor_reverse,
+    save_motor_swap,
+)
 from colors import closest_color_name
 from communication import (
     USBCommunication,
@@ -32,6 +41,10 @@ MAX_LINES_PER_POLL = 128
 
 # How often a reading goes out while colour mode is active.
 COLOR_MODE_INTERVAL_MS = 250
+
+# Fixed speed for run_motor_0/1: a wiring/calibration check, not a program,
+# so it does not need a variable speed.
+TEST_MOTOR_SPEED = 70
 
 # ----------------------
 # Hardware setup
@@ -125,11 +138,21 @@ def run_user_program(comm):
 # ----------------------
 # Command handling
 # ----------------------
+def _motor_calibration():
+    """Everything Motors.run_motors applies, in one reply: bias, each
+    side's reversal, and whether left/right are swapped."""
+    return {
+        "bias": load_motor_calibration(),
+        "reverse": [load_motor_reverse(0), load_motor_reverse(1)],
+        "swap": load_motor_swap(),
+    }
+
+
 # One entry per calibration a client can read back with
 # `get_calibration_<name>`. Add to this and to COMMAND_NAMES in protocol.py
 # together when a new calibration needs to be queryable.
 CALIBRATION_GETTERS = {
-    "motors": load_motor_calibration,
+    "motors": _motor_calibration,
 }
 
 
@@ -168,6 +191,12 @@ def dispatch_command(comm, command):
     # Start program
     # ----------------------
     elif command == "start_program":
+        # A run_motor_0/1 test-drive left running must not fight the program
+        # for the same pins. Stopped unconditionally, before either check
+        # below, since the safety concern applies even to a start attempt
+        # that is about to be refused.
+        Motors().stop_motors()
+
         if program_running:
             comm.write_message("error", "A program is already running")
             return
@@ -244,6 +273,50 @@ def dispatch_command(comm, command):
     elif command.startswith(CALIBRATE_MOTORS_PREFIX):
         save_motor_calibration(parse_motor_calibration(command))
         comm.write_message("calibrated", "motors")
+
+    # ----------------------
+    # Motor reversal: sets one logical side's spin direction, for a motor
+    # wired backwards. Independent of swap_motors below: swap decides which
+    # physical motor serves which side, this corrects that side's polarity
+    # once it has been decided. `reverse_motor_<index>_<value>`, 0 is left
+    # and 1 is right, matching CALIBRATION_GETTERS' "reverse_0"/"reverse_1"
+    # read back below. Absolute set rather than a toggle: a command frame
+    # is not deduplicated the way a data frame is (see FramedSession._apply
+    # in framed.py), so a resent frame must be a no-op, not a second flip.
+    # ----------------------
+    elif command.startswith("reverse_motor_"):
+        index_str, value_str = command[len("reverse_motor_"):].split("_")
+        index = int(index_str)
+        save_motor_reverse(index, value_str == "1")
+        comm.write_message("calibrated", "reverse_%d" % index)
+
+    # ----------------------
+    # Motor swap: the motor wired to the left side answers to right_speed
+    # and vice versa, for a robot with its motors crossed. `swap_motors_0`
+    # or `swap_motors_1`, same absolute-set reasoning as reversal above.
+    # ----------------------
+    elif command.startswith("swap_motors_"):
+        value_str = command[len("swap_motors_"):]
+        save_motor_swap(value_str == "1")
+        comm.write_message("calibrated", "swap")
+
+    # ----------------------
+    # Motor test-drive: run one motor at a fixed speed so a client can see
+    # which physical motor spins and which way, to check wiring or a
+    # calibration change. A fresh Motors() each time rather than one kept
+    # around, so it always picks up whatever calibration is persisted right
+    # now (see Motors.__init__ in roboxlib.py) instead of a stale snapshot
+    # from whenever this module first ran. PWM keeps driving the pins after
+    # the object is dropped, so nothing needs to be kept alive here.
+    # ----------------------
+    elif command == "run_motor_0":
+        Motors().run_motors(TEST_MOTOR_SPEED, 0)
+
+    elif command == "run_motor_1":
+        Motors().run_motors(0, TEST_MOTOR_SPEED)
+
+    elif command == "stop_motors":
+        Motors().stop_motors()
 
     # ----------------------
     # Calibration readback: one command, one reply shape, for every

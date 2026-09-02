@@ -46,6 +46,8 @@ _SAMPLES_KEY = "colorSamples"
 _CALIBRATION_SAMPLES = 10
 
 _MOTOR_CALIBRATION_KEY = "motorCalibration"
+_MOTOR_REVERSE_KEY = "motorReverse"
+_MOTOR_SWAP_KEY = "motorSwap"
 
 
 def _read_config():
@@ -76,6 +78,28 @@ def load_motor_calibration():
 def save_motor_calibration(x):
     _write_config({_MOTOR_CALIBRATION_KEY: x})
 
+
+def load_motor_reverse(index):
+    """Whether motor 0 (left) or 1 (right) has its spin direction inverted."""
+    values = _read_config().get(_MOTOR_REVERSE_KEY) or [False, False]
+    return bool(values[index]) if index < len(values) else False
+
+
+def save_motor_reverse(index, value):
+    """Set motor `index`'s reversal absolutely and persist it."""
+    values = list(_read_config().get(_MOTOR_REVERSE_KEY) or [False, False])
+    values[index] = bool(value)
+    _write_config({_MOTOR_REVERSE_KEY: values})
+
+
+def load_motor_swap():
+    """Whether left/right are swapped, for motors wired to the wrong side."""
+    return bool(_read_config().get(_MOTOR_SWAP_KEY, False))
+
+
+def save_motor_swap(value):
+    _write_config({_MOTOR_SWAP_KEY: bool(value)})
+
 _MIN_S = 1300
 _MAX_S = 8500
 
@@ -96,6 +120,8 @@ class Motors:
         self.b2.freq(500)
 
         self.calibration = load_motor_calibration()
+        self.reverse = [load_motor_reverse(0), load_motor_reverse(1)]
+        self.swap = load_motor_swap()
 
     def run_motor(self, motor, speed):
         speed = min(100, max(-100, speed))
@@ -109,6 +135,17 @@ class Motors:
             self.b2.duty_u16(0 if speed > 0 else pwm_duty)
 
     def run_motors(self, left_speed, right_speed):
+        # Swap first: it decides which physical motor answers to "left" and
+        # "right" at all. Reverse and bias then apply to that logical side,
+        # so a swapped robot's left-motor reversal still means "whichever
+        # motor now drives the left side", not a fixed physical motor.
+        if self.swap:
+            left_speed, right_speed = right_speed, left_speed
+        if self.reverse[0]:
+            left_speed = -left_speed
+        if self.reverse[1]:
+            right_speed = -right_speed
+
         # run_motor() clamps back to [-100, 100], so a bias pushing a speed
         # past the limit just saturates rather than overflowing.
         self.run_motor(1, left_speed * (1 + self.calibration))
