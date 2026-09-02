@@ -249,14 +249,18 @@ The fix is structural, and it is threefold:
    payload content, so a data frame is never scanned for commands.
 2. **Length prefixing.** The payload is read by length, so it is never scanned
    for a terminator or sentinel either.
-3. **Commands by name in `X` frames.** A framed command carries a name from a
-   fixed list, in a frame whose kind says it is a command. User code cannot
-   produce one, because user code only ever becomes `D` and `C` frames.
+3. **Commands by name in `X` frames.** A framed command carries a name
+   `is_command_name()` accepts, in a frame whose kind says it is a command.
+   User code cannot produce one, because user code only ever becomes `D` and
+   `C` frames.
 
 The old strings are gone entirely. Firmware 2.0.0 has no unframed path: a bare
-line is ignored, whatever it says, so there is nothing left to injure. Commands
-are the names in `COMMAND_NAMES`, carried in `X` frames, and program text only
-ever becomes `D` or `C` frames.
+line is ignored, whatever it says, so there is nothing left to injure. A
+command is either a literal name in `COMMAND_NAMES`, or (for the one
+parameterised command, `calibrate_motors_<x>`) a name `parse_motor_calibration`
+accepts as a well-formed, in-range value — still a structural check, not an
+interpretation of arbitrary payload bytes. Carried in `X` frames; program text
+only ever becomes `D` or `C` frames.
 
 There is deliberately no compatibility path. The website checks the handshake
 and refuses to upload to anything below 2.0.0, telling the user to update.

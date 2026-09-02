@@ -56,6 +56,7 @@ DATA_KINDS = (KIND_DATA, KIND_CONTINUE)
 COMMAND_NAMES = (
     "firmware_check",
     "start_program",
+    "get_calibration_motors",
     "calibrate_color_red",
     "calibrate_color_orange",
     "calibrate_color_yellow",
@@ -77,6 +78,53 @@ COMMAND_NAMES = (
     "boot_loader",
     "disconnect_device",
 )
+
+#: Shared prefix for reading back any persisted calibration by name, e.g.
+#: `get_calibration_motors`. One reply shape for every calibration a client
+#: may want to query, rather than a bespoke command and message type per
+#: kind. Each concrete name is still a literal in COMMAND_NAMES, same as
+#: calibrate_color_* is: the set of calibrations is enumerable, so there is
+#: no need for CALIBRATE_MOTORS_PREFIX's runtime parsing here.
+GET_CALIBRATION_PREFIX = "get_calibration_"
+
+#: Motor trim is a continuous value, not an enum, so it cannot live in
+#: COMMAND_NAMES like calibrate_color_* does. is_command_name() is the
+#: whitelist for it instead: still a fixed, structural check, so a malformed
+#: frame still cannot reach the dispatcher.
+CALIBRATE_MOTORS_PREFIX = "calibrate_motors_"
+
+#: x in `calibrate_motors x`: -1 favours the left motor fully, just short of
+#: 1 favours the right. Half-open so exactly one extreme is representable
+#: without the ambiguity of both +1 and -1 meaning "fully one side".
+MOTOR_BIAS_MIN = -1
+MOTOR_BIAS_MAX = 1
+
+
+def parse_motor_calibration(name):
+    """The bias from a `calibrate_motors_<x>` command name.
+
+    None if `name` is not shaped like one, `x` does not parse as a number, or
+    it falls outside [MOTOR_BIAS_MIN, MOTOR_BIAS_MAX).
+    """
+    if not name.startswith(CALIBRATE_MOTORS_PREFIX):
+        return None
+    try:
+        value = float(name[len(CALIBRATE_MOTORS_PREFIX):])
+    except ValueError:
+        return None
+    if not (MOTOR_BIAS_MIN <= value < MOTOR_BIAS_MAX):
+        return None
+    return value
+
+
+def is_command_name(name):
+    """Whitelist check for an X frame payload.
+
+    Literal names plus the one parameterised command, so the frame layer can
+    still refuse anything else outright.
+    """
+    return name in COMMAND_NAMES or parse_motor_calibration(name) is not None
+
 
 SEQUENCE_MODULO = 256
 

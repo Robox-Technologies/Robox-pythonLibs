@@ -116,7 +116,7 @@ class FramedSession:
             # The only place a payload is read as a command, and only because
             # its frame says so. Data frames are never inspected.
             name = frame.text()
-            if name not in p.COMMAND_NAMES:
+            if not p.is_command_name(name):
                 self.reply("error", "Unknown command: {}".format(name))
                 return None
             return name

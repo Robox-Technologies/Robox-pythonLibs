@@ -3,7 +3,7 @@ import _thread
 import machine
 import time
 
-from roboxlib import ColorSensor
+from roboxlib import ColorSensor, load_motor_calibration, save_motor_calibration
 from colors import closest_color_name
 from communication import (
     USBCommunication,
@@ -11,6 +11,11 @@ from communication import (
     flush_outgoing_messages,
 )
 from framed import FRAME_PREFIX, FramedSession
+from protocol import (
+    CALIBRATE_MOTORS_PREFIX,
+    GET_CALIBRATION_PREFIX,
+    parse_motor_calibration,
+)
 
 # 2.0.0 is frame-only. There is no unframed path any more, so a client still
 # speaking the old bare-line protocol gets no response and must update. 2.0.1
@@ -120,6 +125,14 @@ def run_user_program(comm):
 # ----------------------
 # Command handling
 # ----------------------
+# One entry per calibration a client can read back with
+# `get_calibration_<name>`. Add to this and to COMMAND_NAMES in protocol.py
+# together when a new calibration needs to be queryable.
+CALIBRATION_GETTERS = {
+    "motors": load_motor_calibration,
+}
+
+
 def dispatch_command(comm, command):
     """Act on a control command.
 
@@ -221,6 +234,28 @@ def dispatch_command(comm, command):
         else:
             colorSensor.reset_palette(name)
             comm.write_message("calibrated", name + "_reset")
+
+    # ----------------------
+    # Motor calibration: a left/right trim bias, applied by every Motors
+    # instance a user program creates (see Motors.run_motors in roboxlib.py).
+    # No live hardware object is needed here, unlike colour calibration: this
+    # only ever persists a number for the next Motors() to pick up.
+    # ----------------------
+    elif command.startswith(CALIBRATE_MOTORS_PREFIX):
+        save_motor_calibration(parse_motor_calibration(command))
+        comm.write_message("calibrated", "motors")
+
+    # ----------------------
+    # Calibration readback: one command, one reply shape, for every
+    # calibration listed in CALIBRATION_GETTERS above. `name` is always a
+    # known key here, since the frame layer already refused anything not
+    # literally in COMMAND_NAMES.
+    # ----------------------
+    elif command.startswith(GET_CALIBRATION_PREFIX):
+        name = command[len(GET_CALIBRATION_PREFIX):]
+        comm.write_message(
+            "calibration", {"name": name, "value": CALIBRATION_GETTERS[name]()}
+        )
 
     # ----------------------
     # Colour mode: periodic readings until something else is sent

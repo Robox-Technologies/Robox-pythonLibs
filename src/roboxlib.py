@@ -45,6 +45,37 @@ _CALIBRATION_KEY = "colorCalibration"
 _SAMPLES_KEY = "colorSamples"
 _CALIBRATION_SAMPLES = 10
 
+_MOTOR_CALIBRATION_KEY = "motorCalibration"
+
+
+def _read_config():
+    try:
+        with open('config.json', 'r') as configFile:
+            return json.load(configFile)
+    except Exception:
+        return {}
+
+
+def _write_config(updates):
+    # Read-modify-write rather than overwrite: colour and motor calibration
+    # share this one file, so writing only one's keys would erase the other's.
+    config = _read_config()
+    config.update(updates)
+    with open('config.json', 'w') as configFile:
+        json.dump(config, configFile)
+
+
+def load_motor_calibration():
+    """The persisted left/right trim bias, or 0.0 if never calibrated."""
+    value = _read_config().get(_MOTOR_CALIBRATION_KEY, 0.0)
+    if not isinstance(value, (int, float)) or not (-1 <= value < 1):
+        return 0.0
+    return value
+
+
+def save_motor_calibration(x):
+    _write_config({_MOTOR_CALIBRATION_KEY: x})
+
 _MIN_S = 1300
 _MAX_S = 8500
 
@@ -64,6 +95,8 @@ class Motors:
         self.b2 = PWM(Pin(b2_pin, Pin.OUT))
         self.b2.freq(500)
 
+        self.calibration = load_motor_calibration()
+
     def run_motor(self, motor, speed):
         speed = min(100, max(-100, speed))
         pwm_duty = abs(int(speed/100*65025))
@@ -76,8 +109,10 @@ class Motors:
             self.b2.duty_u16(0 if speed > 0 else pwm_duty)
 
     def run_motors(self, left_speed, right_speed):
-        self.run_motor(1, left_speed)
-        self.run_motor(2, right_speed)
+        # run_motor() clamps back to [-100, 100], so a bias pushing a speed
+        # past the limit just saturates rather than overflowing.
+        self.run_motor(1, left_speed * (1 + self.calibration))
+        self.run_motor(2, right_speed * (1 - self.calibration))
 
     def stop_motors(self):
         self.run_motors(0, 0)
@@ -196,16 +231,7 @@ class ColorSensor:
             raise RuntimeError("wrong sensor id 0x{:x}".format(sensor_id))
 
     def loadCalibration(self):
-        # Load calibration data
-        config = { _CALIBRATION_KEY: _CALIBRATION_DEFAULT, _SAMPLES_KEY: {} }
-
-        try:
-            with open('config.json', 'r') as configFile:
-                config = json.load(configFile)
-        except:
-            with open('config.json', 'w') as configFile:
-                json.dump(config, configFile)
-
+        config = _read_config()
         self.calibration = _normalise_calibration(config.get(_CALIBRATION_KEY))
         # Raw readings, one per calibrated hue: not persisted pre-scaled,
         # because they now feed the matrix fit below, which needs the raw
@@ -307,11 +333,9 @@ class ColorSensor:
     def _save_config(self):
         # self.palette and self._matrix are not saved: both are cheaply
         # derived from self.calibration and self.samples, which are.
-        with open('config.json', 'w') as configFile:
-            json.dump(
-                { _CALIBRATION_KEY: self.calibration, _SAMPLES_KEY: self.samples },
-                configFile,
-            )
+        _write_config(
+            { _CALIBRATION_KEY: self.calibration, _SAMPLES_KEY: self.samples }
+        )
 
     def resetCalibration(self):
         self.calibration = {

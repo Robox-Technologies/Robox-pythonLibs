@@ -146,6 +146,38 @@ class TestEncoding(unittest.TestCase):
         self.assertEqual(p.parse_flow(decoded[0].payload), (0x2B, 2048))
 
 
+class TestMotorCalibrationCommand(unittest.TestCase):
+    """calibrate_motors_<x> is parameterised, unlike the fixed COMMAND_NAMES
+    entries, so it needs its own whitelist logic rather than a literal
+    membership check."""
+
+    def test_parses_negative_zero_and_positive_bias(self):
+        self.assertEqual(p.parse_motor_calibration("calibrate_motors_-0.4"), -0.4)
+        self.assertEqual(p.parse_motor_calibration("calibrate_motors_0"), 0.0)
+        self.assertEqual(p.parse_motor_calibration("calibrate_motors_0.99"), 0.99)
+
+    def test_lower_bound_is_inclusive_upper_bound_is_not(self):
+        self.assertEqual(p.parse_motor_calibration("calibrate_motors_-1"), -1.0)
+        self.assertIsNone(p.parse_motor_calibration("calibrate_motors_1"))
+
+    def test_out_of_range_is_rejected(self):
+        self.assertIsNone(p.parse_motor_calibration("calibrate_motors_-1.01"))
+        self.assertIsNone(p.parse_motor_calibration("calibrate_motors_2"))
+
+    def test_unparseable_or_unrelated_names_are_rejected(self):
+        self.assertIsNone(p.parse_motor_calibration("calibrate_motors_nope"))
+        self.assertIsNone(p.parse_motor_calibration("calibrate_motors_"))
+        self.assertIsNone(p.parse_motor_calibration("firmware_check"))
+        self.assertIsNone(p.parse_motor_calibration("calibrate_motors_nan"))
+        self.assertIsNone(p.parse_motor_calibration("calibrate_motors_inf"))
+
+    def test_is_command_name_accepts_fixed_names_and_valid_bias(self):
+        self.assertTrue(p.is_command_name("firmware_check"))
+        self.assertTrue(p.is_command_name("calibrate_motors_-0.2"))
+        self.assertFalse(p.is_command_name("calibrate_motors_5"))
+        self.assertFalse(p.is_command_name("not_a_command"))
+
+
 class TestFrameReader(unittest.TestCase):
     def setUp(self):
         self.reader = p.FrameReader()

@@ -86,6 +86,13 @@ def load_firmware(color_sensor_cls=RaisingColorSensor):
 
     roboxlib = types.ModuleType("roboxlib")
     roboxlib.ColorSensor = color_sensor_cls
+    roboxlib.motor_calibrations = []
+    roboxlib.save_motor_calibration = roboxlib.motor_calibrations.append
+    roboxlib.load_motor_calibration = (
+        lambda: roboxlib.motor_calibrations[-1]
+        if roboxlib.motor_calibrations
+        else 0.0
+    )
 
     saved = {
         name: sys.modules.get(name)
@@ -117,6 +124,7 @@ def load_firmware(color_sensor_cls=RaisingColorSensor):
 
     ns["machine"] = machine
     ns["communication"] = communication
+    ns["roboxlib"] = roboxlib
 
     # Bluetooth already records everything through its FakeUart. USB writes to
     # stdout, so give it somewhere harmless to put its bytes.
@@ -465,6 +473,76 @@ class TestColorCalibration(unittest.TestCase):
         self.assertEqual(
             [r["message"] for r in replies(ble) if r["type"] == "error"],
             ["Unknown command: calibrate_color_turquoise"],
+        )
+
+
+class TestMotorCalibration(unittest.TestCase):
+    def test_a_bias_is_persisted_and_acknowledged(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "calibrate_motors_-0.35")
+        drain(ns)
+
+        self.assertEqual(ns["roboxlib"].motor_calibrations, [-0.35])
+        self.assertEqual(
+            [r["message"] for r in replies(usb) if r["type"] == "calibrated"],
+            ["motors"],
+        )
+
+    def test_positive_and_boundary_biases_round_trip(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "calibrate_motors_0.6")
+        ns["dispatch_command"](usb, "calibrate_motors_-1")
+        drain(ns)
+
+        self.assertEqual(ns["roboxlib"].motor_calibrations, [0.6, -1.0])
+
+    def test_out_of_range_or_malformed_values_are_rejected_by_the_frame_layer(
+        self,
+    ):
+        """Mirrors calibrate_color_turquoise: the whitelist in protocol.py is
+        the gate, so a bad value never reaches the dispatcher."""
+        ns = load_firmware()
+        ble = ns["ble"]
+
+        for index, bad in enumerate(("1", "2.5", "-1.01", "nope")):
+            ble.uart.feed(command_frame("calibrate_motors_" + bad, seq=index))
+            ns["poll"](ble)
+        drain(ns)
+
+        self.assertEqual(
+            [r["message"] for r in replies(ble) if r["type"] == "error"],
+            ["Unknown command: calibrate_motors_" + bad
+             for bad in ("1", "2.5", "-1.01", "nope")],
+        )
+        self.assertEqual(ns["roboxlib"].motor_calibrations, [])
+
+    def test_get_returns_the_default_when_never_calibrated(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "get_calibration_motors")
+        drain(ns)
+
+        self.assertEqual(
+            [r["message"] for r in replies(usb) if r["type"] == "calibration"],
+            [{"name": "motors", "value": 0.0}],
+        )
+
+    def test_get_returns_the_persisted_bias(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "calibrate_motors_-0.35")
+        ns["dispatch_command"](usb, "get_calibration_motors")
+        drain(ns)
+
+        self.assertEqual(
+            [r["message"] for r in replies(usb) if r["type"] == "calibration"],
+            [{"name": "motors", "value": -0.35}],
         )
 
 
