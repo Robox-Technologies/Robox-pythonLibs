@@ -1,30 +1,7 @@
 """Framed, sequenced, credit-paced transport for the Ro/Box link.
 
-The old protocol put commands and program text on one unframed channel and
-compared every line against a command table, so a dropped packet turned code
-into different runnable code, and user code equal to a command got executed.
-Both come from interpreting payload bytes. Here they are never interpreted: a
-frame carries an explicit kind, plus a length and checksum.
-
-Credit-based batching with sequence verification: the sender transmits back to
-back and the receiver returns one cumulative ACK per batch, so the round trip
-is amortised over ACK_EVERY frames instead of paid per 20-byte chunk. Credit is
-counted in bytes, because the UART receive buffer is what actually overflows.
-
-Wire format, fixed-width header so partial frames are detectable at once:
-
-    \\x01 SS LL CCCC K : <payload> \\n
-
-SOH, sequence (2 hex), length (2 hex), checksum (4 hex), kind (1 char),
-separator, payload, newline. Payloads exclude SOH and LF, so SOH is an
-unambiguous resync point and one frame stays one line on the wire.
-
-The checksum is the low 16 bits of CRC-32, chosen over a bespoke CRC-16 because
-binascii.crc32 is native C on the board and standard everywhere else. Bit
-corruption is already caught by the BLE link layer; what reaches here is whole
-missing packets (caught by the sequence number) and truncation.
-
-Imports nothing from machine, so it runs on CPython for the conformance tests.
+Wire format and rationale: docs/PROTOCOL.md. Imports nothing from machine, so
+it also runs on CPython for the conformance tests.
 """
 
 from binascii import crc32
@@ -125,25 +102,13 @@ class ProtocolError(Exception):
 # --- checksums -------------------------------------------------------------
 
 def frame_checksum(seq, kind, payload):
-    """Check over the header fields and payload.
-
-    Covers seq and kind too: a corrupted header misroutes a frame, which a
-    payload-only checksum would not notice.
-    """
+    """CRC over seq and kind as well as payload; a bad header misroutes."""
     header = bytes((seq & 0xFF, len(payload)))
     return crc32(header + kind.encode() + payload) & 0xFFFF
 
 
 def normalise_program(text):
-    """Canonical form both ends checksum.
-
-    Line endings collapse to \n and exactly one trailing newline is
-    guaranteed; nothing else changes. Blank lines are preserved: the old
-    protocol dropped them because an empty line was indistinguishable from
-    noise on the UART, but a frame states its payload length, so an empty line
-    is now explicit and the stored program can be a faithful copy of what was
-    written.
-    """
+    """Canonical form both ends checksum: LF endings, one trailing newline."""
     unified = text.replace("\r\n", "\n").replace("\r", "\n")
     if not unified:
         return ""
@@ -199,13 +164,9 @@ def frame_length(payload_length):
 
 
 def split_payload(text, final_kind, limit=MAX_PAYLOAD):
-    """Break text into frame-sized payloads.
+    """Break text into frame-sized payloads, never splitting mid-character.
 
-    Splits on encoded bytes but never inside a multi-byte character, which
-    would decode to a replacement character and corrupt the result. All but the
-    last piece are KIND_CONTINUE, so CONTINUE means only "the payload continues
-    in the next frame" and works in either direction: program text ends in a
-    DATA frame, a device message ends in a REPLY frame.
+    All but the last piece are KIND_CONTINUE.
     """
     encoded = text.encode() if isinstance(text, str) else text
     if len(encoded) <= limit:
@@ -236,11 +197,7 @@ def split_line(line, limit=MAX_PAYLOAD):
 
 
 def encode_program(text, start_seq=0):
-    """Frames for a whole upload: BEGIN, body, END.
-
-    BEGIN and END carry the line count and program CRC, so the receiver can
-    verify the result independently of individual frame delivery.
-    """
+    """Frames for a whole upload: BEGIN, body, END."""
     normalised = normalise_program(text)
     lines = normalised.split("\n")[:-1] if normalised else []
     checksum = program_checksum(text)
@@ -290,11 +247,9 @@ def parse_flow(payload):
 # --- decoding --------------------------------------------------------------
 
 def _parse_hex(data, offset, width):
-    """Parse `width` ASCII hex digits from a buffer, or -1 if not hex.
-
-    Hand-rolled because MicroPython's int() will not accept a bytes or
-    bytearray slice, unlike CPython's. Mirrors parseHex in frames.ts.
-    """
+    """Parse `width` ASCII hex digits from a buffer, or -1 if not hex."""
+    # Hand-rolled: MicroPython's int() will not accept a bytes or bytearray
+    # slice, unlike CPython's. Mirrors parseHex in frames.ts.
     value = 0
     for index in range(offset, offset + width):
         byte = data[index]
@@ -330,11 +285,7 @@ class Frame:
 
 
 class FrameReader:
-    """Pulls frames from a stream that may be missing pieces.
-
-    `feed` returns (frames, damage). Damage is reported, not swallowed: "we
-    lost something" is the signal the old protocol never had.
-    """
+    """Pulls frames from a lossy stream. `feed` returns (frames, damage)."""
 
     def __init__(self, max_buffer=4096):
         # Advanced by slice reassignment rather than `del buffer[:n]`:
@@ -429,11 +380,7 @@ def sequence_distance(later, earlier):
 
 
 class SequencedReceiver:
-    """Accepts in-order frames, asks for a resend when one is missing.
-
-    Go-back-N: on a gap or bad checksum the receiver discards everything after
-    it, even intact frames, since accepting them would leave a hole mid-program.
-    """
+    """Go-back-N receiver: accepts in-order frames, discards after a gap."""
 
     def __init__(self, credit=DEFAULT_CREDIT, ack_every=ACK_EVERY):
         self.expected = 0
@@ -488,15 +435,9 @@ class SequencedReceiver:
 
 
 class AdaptivePacer:
-    """Chooses the inter-chunk delay from the loss the link is showing.
+    """Additive-decrease, multiplicative-increase controller for chunk delay.
 
-    Additive decrease, multiplicative increase, on the delay. A fixed constant
-    cannot be right for every board: the same firmware runs behind HM-10s of
-    varying quality, at varying distances, in varying interference. The
-    protocol already produces the signal needed to tune it, so this uses it.
-
-    State lives on the connection rather than the upload, so a second upload
-    starts from what the link already taught us instead of probing again.
+    Lives on the connection, not the upload, so a second upload keeps the tuning.
     """
 
     def __init__(
@@ -558,11 +499,7 @@ class AdaptivePacer:
         return True
 
     def on_loss(self):
-        """A NAK, a damaged frame, or a timeout.
-
-        Backs off once per episode. Further losses before the next clean
-        acknowledgement are the same episode and are counted, not acted on.
-        """
+        """A NAK, a damaged frame, or a timeout. Backs off once per episode."""
         self.clean_streak = 0
 
         if not self.armed:
@@ -604,11 +541,7 @@ class AdaptivePacer:
 
 
 class CreditWindow:
-    """Sender-side flow control and retransmission bookkeeping.
-
-    Lives here as well as in the TypeScript client so the offline tests can
-    drive both halves of the protocol against each other.
-    """
+    """Sender-side flow control and retransmission bookkeeping."""
 
     def __init__(self, frames, start_seq=0, credit=INITIAL_CREDIT):
         self.frames = list(frames)
@@ -666,12 +599,8 @@ class CreditWindow:
         return False
 
     def rewind_to_base(self):
-        """Resend from the oldest unacknowledged frame. The timeout path.
-
-        Counts as a retransmit, which is what bounds the caller's retry loop.
-        Setting next_index directly does not, and a sender that does so spins
-        forever against a peer that has gone quiet.
-        """
+        """Resend from the oldest unacknowledged frame. The timeout path."""
+        # Counts as a retransmit, which is what bounds the caller's retry loop.
         if self.next_index > self.base:
             self.next_index = self.base
             self.retransmits += 1

@@ -336,13 +336,7 @@ class TestAdaptivePacer(unittest.TestCase):
         self.assertLessEqual(pacer.delay_ms, p.MAX_CHUNK_DELAY_MS)
 
     def test_one_backoff_per_loss_episode(self):
-        """Go-back-N NAKs a whole run of frames for one bad patch of radio.
-
-        Treating each NAK as its own congestion signal compounded the factor
-        repeatedly and sent the delay to the ceiling for something that
-        warranted a single step. Measured on hardware as a 38% goodput
-        regression against a fixed delay.
-        """
+        """Go-back-N NAKs a whole run of frames for one bad patch of radio."""
         pacer = p.AdaptivePacer(delay_ms=21)
         for _ in range(6):
             pacer.on_loss()
@@ -403,12 +397,7 @@ class TestAdaptivePacer(unittest.TestCase):
         self.assertEqual(pacer.delay_ms, p.MAX_CHUNK_DELAY_MS)
 
     def test_converges_around_a_links_true_capacity(self):
-        """Simulate a link that loses below `capacity` and check where it sits.
-
-        Loss arrives in bursts of NAKs, because that is what go-back-N produces
-        from one bad patch. An earlier version of this test used a single loss
-        per event and passed while the controller was badly broken on hardware.
-        """
+        """Simulate a link that loses below `capacity` and check where it sits."""
         for capacity in (24, 28, 34, 45):
             pacer = p.AdaptivePacer()
             seen = []
@@ -449,11 +438,7 @@ class TestAdaptivePacer(unittest.TestCase):
 
 
 class LossyLink:
-    """Seeded channel that drops, truncates and duplicates whole BLE chunks.
-
-    Loss is applied per 20-byte chunk because that is how BLE actually fails:
-    an entire write-without-response goes missing, not scattered bits.
-    """
+    """Seeded channel that drops, truncates and duplicates whole BLE chunks."""
 
     CHUNK = 20
 
@@ -483,12 +468,7 @@ class LossyLink:
 
 
 def run_upload(text, link, max_rounds=400):
-    """Drive a full upload over a lossy link and return what the receiver stored.
-
-    A compressed model of both endpoints: the sender's credit window and the
-    receiver's sequence checks, with the link in between. Enough to prove
-    go-back-N converges without needing hardware.
-    """
+    """Drive a full upload over a lossy link; returns what the receiver stored."""
     frames = p.encode_program(text)
     window = p.CreditWindow(frames, credit=p.INITIAL_CREDIT)
     receiver = p.SequencedReceiver()

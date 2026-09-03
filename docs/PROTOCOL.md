@@ -11,21 +11,11 @@ Implemented twice, once per language, and they must agree byte for byte:
 Change one side and the vector tests fail. That is the point: the alternative
 is finding out from a board.
 
-## Why it exists
+Payload bytes are never interpreted. A frame carries an explicit kind, plus a
+length and a checksum, and control is told from data by the kind alone.
 
-The old protocol put control commands and program text on one unframed
-channel, and the firmware compared every received line against a command
-table. Two failures follow from that, both measured rather than theorised:
-
-1. **Silent corruption.** A dropped BLE packet turned a line of code into a
-   different line of code. Neither end could tell, so the board stored it and
-   ran it.
-2. **Command injection.** A line of *user code* equal to a command was executed
-   instead of stored. The baseline run had a corpus send 122 bytes and the board
-   store 49, over a perfect USB link, with no error raised.
-
-Both are the same root cause: payload bytes were being interpreted. Here they
-never are.
+The website refuses to upload to firmware below 2.0.0. There is no unframed
+path and no compatibility fallback: a bare line is ignored, whatever it says.
 
 ## Frame layout
 
@@ -77,11 +67,10 @@ Covering the header matters: a corrupted header is how a frame gets misrouted,
 and a payload-only checksum would not notice.
 
 CRC-32 rather than a bespoke CRC-16 because `binascii.crc32` is native C on the
-board and standard everywhere else, so both ends run one well-specified
-algorithm with no hand-written table to get wrong. Bit corruption is already
-handled by the BLE link layer's own CRC; what reaches this layer is whole
-missing packets, which the sequence number catches deterministically, and
-truncation, which 16 bits detects comfortably.
+board and standard everywhere else, with no hand-written table to get wrong.
+The BLE link layer already handles bit corruption; what reaches this layer is
+whole missing packets, caught by the sequence number, and truncation, which 16
+bits detects comfortably.
 
 ## Credit-based batching
 
@@ -105,8 +94,7 @@ comes.
 
 Credit bounds what the **board** buffers. It says nothing about the HM-10 in
 between, which forwards to the board over a 9600 baud UART and has a small
-buffer of its own, so writes have to be paced as well. Pacing was a constant
-(40 ms per 20-byte chunk) until a sweep showed why that cannot be right.
+buffer of its own, so writes have to be paced as well.
 
 ### The floor is arithmetic
 
@@ -114,20 +102,6 @@ One chunk takes `20 / 960 = 20.83 ms` to leave the module. Pace faster than
 that and bytes are offered faster than they can go, so overflow is certain
 given enough of them. `MIN_CHUNK_DELAY_MS` is therefore 21, derived rather than
 chosen, and the controller cannot go below it.
-
-The measured sweep sits exactly on that boundary, which is the useful part:
-
-| delay | goodput | wire overhead | retransmits | vs floor |
-|---|---|---|---|---|
-| 40 ms | 249 B/s | 1.40x | 0 | above |
-| 30 ms | 307 B/s | 1.46x | 2 | above |
-| 25 ms | 269 B/s | 1.96x | 5 | above, strained |
-| 20 ms | 93 B/s | 7.15x | 31 | **below** |
-
-Below the floor it is not slow degradation, it is collapse: a seventh of the
-goodput at seven times the wire traffic. Integrity held at 8/8 throughout,
-because go-back-N kept repairing it, which is the protocol working and also
-what hid the problem.
 
 ### The controller
 
@@ -141,23 +115,19 @@ what hid the problem.
 
 Those last three words carry the design. Go-back-N resends a whole run of
 frames after a gap, so one bad patch of radio draws a NAK for each of them.
-Treating each as its own congestion signal compounds the factor repeatedly and
-reaches the ceiling for something that warranted a single step; measured on
-hardware, that cost 38% of goodput against a fixed delay while causing *fewer*
-retransmissions than it. A backoff therefore disarms until the next clean
+Treating each as its own congestion signal reaches the ceiling for something
+that warranted a single step, so a backoff disarms until the next clean
 acknowledgement, which is the evidence that the episode is over.
 
-The probe is proportional rather than a fixed step for the matching reason: a
-2 ms step needed eighty acknowledgements to come back from 100 ms, longer than
-most uploads, so the controller spent its life crawling downhill instead of
-running at its settled rate.
+The probe is proportional rather than a fixed step so recovery does not depend
+on how far the delay went: a fixed 2 ms step takes eighty acknowledgements to
+come back from 100 ms, longer than most uploads.
 
 It starts at 40 ms, well clear of the floor, because the first upload on an
 unknown link should be safe rather than fast. State lives on the
 **connection**, not the upload, so a second upload starts from what the link
-already taught us; measured on radio it converges to 24 ms by the third corpus
-and holds there, beating a hand-picked fixed 30 ms by 8% of goodput at the same
-integrity and the same retransmit count.
+already taught us. On radio it converges to around 24 ms and holds there; see
+[COMMUNICATION.md](COMMUNICATION.md).
 
 Unlike the frame format, the two implementations do not have to agree here:
 pacing is local policy, and the receiver neither knows nor cares. They are kept
@@ -182,8 +152,8 @@ rather than looping.
 
 ## End-to-end verification
 
-Independent of the frame layer, and the part that actually answers "the board
-is unaware it is running nonsense":
+Independent of the frame layer, and what stops the board running a program it
+never received intact:
 
 1. `B` declares the line count and a CRC-32 of the normalised program.
 2. The board accumulates its own CRC over exactly the bytes it writes to
@@ -198,9 +168,8 @@ is unaware it is running nonsense":
 Both ends run the same `normalise_program`, which collapses line endings to
 `\n` and guarantees exactly one trailing newline. Nothing else changes: blank
 lines and trailing whitespace are preserved, so the stored program is a
-faithful copy of what was written. The old protocol dropped blank lines because
-an empty line was indistinguishable from noise on the UART; a frame states its
-payload length, so an empty line is now explicit.
+faithful copy of what was written. A frame states its payload length, so an
+empty line is explicit rather than indistinguishable from noise.
 
 ## Retransmission, precisely
 
@@ -228,40 +197,18 @@ frames arrive, so it has nowhere to hold out-of-order frames. Resending a few
 extra frames is cheaper than buffering the program twice on a device with
 264KB of RAM.
 
-Measured on hardware over BLE: the `typical` and `command_injection` corpora
-each took 2 NAKs and recovered byte-exact, so this path runs in practice rather
-than only in tests.
+## Why there is no in-band sentinel
 
-## Why the command strings were not the problem
-
-Worth stating plainly, because it is the obvious first instinct: there is no
-better choice of magic string.
-
-`x01FIRMCHECK` and friends are guessable, but obscurity is not the issue.
-*Any* in-band sentinel is a string a user can type into the Python editor, and
-the editor is free-form. Renaming them to something unguessable would reduce
-the odds of an accident while leaving the mechanism intact, and a mechanism that
-fails only rarely is worse than one that fails visibly.
-
-The fix is structural, and it is threefold:
+Any in-band marker is a string a user can type into the editor, so no choice of
+magic string is safe. Three properties replace it:
 
 1. **A kind field.** Control and data are separated by frame structure, not by
    payload content, so a data frame is never scanned for commands.
 2. **Length prefixing.** The payload is read by length, so it is never scanned
    for a terminator or sentinel either.
-3. **Commands by name in `X` frames.** A framed command carries a name from a
-   fixed list, in a frame whose kind says it is a command. User code cannot
+3. **Commands by name in `X` frames.** A framed command carries a name from
+   `COMMAND_NAMES`, in a frame whose kind says it is a command. User code cannot
    produce one, because user code only ever becomes `D` and `C` frames.
-
-The old strings are gone entirely. Firmware 2.0.0 has no unframed path: a bare
-line is ignored, whatever it says, so there is nothing left to injure. Commands
-are the names in `COMMAND_NAMES`, carried in `X` frames, and program text only
-ever becomes `D` or `C` frames.
-
-There is deliberately no compatibility path. The website checks the handshake
-and refuses to upload to anything below 2.0.0, telling the user to update.
-Keeping a fallback would have meant keeping the code that corrupted programs,
-and a client that silently downgrades to it is the worst of both.
 
 ## Running the tests
 
@@ -282,8 +229,7 @@ cp tests/vectors/frames.json ../Robox-Website/src/libs/communication/__tests__/v
 
 ## MicroPython gotchas
 
-Three divergences from CPython that the shared code has to work around. All
-three were found by running on the board, not by reading:
+Three divergences from CPython that the shared code works around:
 
 * `int()` will not accept a `bytes` or `bytearray` slice, so header fields are
   parsed by a hand-rolled `_parse_hex`.

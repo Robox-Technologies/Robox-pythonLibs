@@ -47,8 +47,7 @@ Everything under `src/` is uploaded to the Pico's root, so `src/main.py` becomes
 
 A release UF2 is just two things stacked in flash: a stock MicroPython build,
 and a littlefs filesystem holding everything in `src/`. Both are reproducible on
-a laptop, so **no Pico is needed to build one** — `picotool save` only ever
-needed a board because it read the result back off real flash.
+a laptop, so **no Pico is needed to build one**.
 
 ```bash
 python3 -m pip install --user -r requirements-dev.txt   # littlefs-python
@@ -87,8 +86,8 @@ ROBOX_BASE_UF2=old-dump.uf2 ./tools/pico build # base it on a board dump
 ./tools/pico inspect build/robox-2.0.1.uf2     # list what a UF2 actually contains
 ```
 
-Flashing is unchanged — hold BOOTSEL while plugging the board in, then either
-drag the UF2 onto the `RPI-RP2` volume or:
+To flash, hold BOOTSEL while plugging the board in, then either drag the UF2
+onto the `RPI-RP2` volume or:
 
 ```bash
 ./tools/pico flash build/robox-2.0.1.uf2
@@ -96,9 +95,8 @@ drag the UF2 onto the `RPI-RP2` volume or:
 
 ### Capturing a UF2 off a board
 
-Still supported, and still the way to snapshot a board that is already set up
-(it also captures `program.py` and any calibration data, which a clean build
-deliberately leaves out). Needs
+The way to snapshot a board that is already set up — a dump also captures
+`program.py` and any calibration data, which a clean build leaves out. Needs
 [`picotool`](https://github.com/raspberrypi/picotool) and the board in BOOTSEL
 mode — the task is **`UF2: Capture from board (sync -> BOOTSEL -> save)`**, or:
 

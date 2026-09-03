@@ -1,15 +1,7 @@
 """Deterministic test corpora for the communication harness.
 
-Every payload here is generated from a fixed seed so a "before" run and an
-"after" run push byte-identical traffic across the link. That is the whole
-point: any difference in the report has to come from the protocol, not from
-the input.
-
-SAFETY: these programs are never executed on the board (the harness never
-sends START_PROGRAM), but they are written to program.py, so a later manual
-run must not be able to drive the motors. `assert_safe` enforces that no
-corpus line can touch a motor API or smuggle in a dangerous command, and it
-runs at import time.
+Fixed seeds, so before and after runs push byte-identical traffic. Corpus
+programs are never executed; `assert_safe` keeps motor APIs out of them.
 """
 
 import random
@@ -49,11 +41,7 @@ def tiny():
 
 
 def typical():
-    """Roughly what the block editor emits for a simple sensor program.
-
-    Motor calls are deliberately replaced with prints; the shape (imports,
-    defs, loops, f-strings) is what matters for framing, not the payload.
-    """
+    """Roughly what the block editor emits for a simple sensor program."""
     lines = [
         "from roboxlib import LineSensors, UltrasonicSensor",
         "from machine import Pin",
@@ -86,11 +74,7 @@ def typical():
 
 
 def long_lines():
-    """Lines that straddle the 20-byte BLE chunk boundary awkwardly.
-
-    Lengths are chosen to land just under, exactly on, and just over multiples
-    of the chunk size, which is where off-by-one framing bugs live.
-    """
+    """Lines that straddle the 20-byte BLE chunk boundary awkwardly."""
     out = []
     for length in (19, 20, 21, 39, 40, 41, 59, 60, 61, 79, 80, 81, 96, 120):
         # `# ` prefix keeps it valid Python whatever the length.
@@ -150,12 +134,7 @@ def stress(seed=20260825, lines=200):
 
 
 def command_injection():
-    """A program whose 4th line is bare `x03ENDUPLD`.
-
-    Under the old protocol this lost everything from that line onward, over a
-    perfect link, because user code and control commands shared one unframed
-    channel. It must now round-trip byte for byte.
-    """
+    """A program whose 4th line is bare `x03ENDUPLD`. Must round-trip verbatim."""
     return "\n".join(
         [
             "print('before the injected command')",
@@ -169,11 +148,7 @@ def command_injection():
 
 
 def command_guard():
-    """A bare `x01FIRMCHECK` in the middle of a program.
-
-    Once swallowed as a command, which made the board reply with its version
-    and put the other interface to sleep mid-upload. Now ordinary text.
-    """
+    """A bare `x01FIRMCHECK` mid-program. Now ordinary text, once a command."""
     return "\n".join(
         [
             "print('guard test')",

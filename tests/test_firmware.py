@@ -1,10 +1,7 @@
 """Offline tests for src/main.py. No hardware required.
 
-main.py is a script: it builds its interfaces at import and then loops forever.
-`load_firmware` stubs the MicroPython-only modules and runs everything up to
-that loop, so the real dispatch and line handling are what gets tested.
-
-Run with: ./tools/run-tests
+`load_firmware` stubs the MicroPython-only modules and runs main.py up to its
+loop. Run with: ./tools/run-tests
 """
 
 import json
@@ -133,12 +130,7 @@ def sent_bytes(comm):
 
 
 def replies(comm):
-    """The device messages an interface has emitted, decoded.
-
-    Fed in chunks, as a link delivers them. The reader caps its buffer at 4KB
-    and resyncs past an overflow, so handing it a long stream in one go quietly
-    discards most of it.
-    """
+    """The device messages an interface has emitted, decoded."""
     out = []
     reader = p.FrameReader()
     raw = sent_bytes(comm)
@@ -354,14 +346,7 @@ class TestOutgoingOrder(unittest.TestCase):
     """Console output has to reach the terminal in the order it was printed."""
 
     def test_pacing_gate_does_not_let_a_later_message_overtake(self):
-        """A clock tick part-way down the queue must not reorder one interface.
-
-        `can_send_now` is a comparison against the clock, so asking it once per
-        queue entry meant a scan that straddled `next_send_time` judged the
-        oldest entry not ready and a later one ready, and sent that first. The
-        clock here advances a millisecond per call, which is what a scan
-        preempted by the user program's thread looks like on the board.
-        """
+        """A clock tick part-way down the queue must not reorder one interface."""
         ns = load_firmware()
         ble, comms = ns["ble"], ns["communication"]
 

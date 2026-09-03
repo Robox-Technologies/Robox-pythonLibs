@@ -1,8 +1,4 @@
-"""Offline tests for tools/build_uf2.py -- the host-side UF2 builder.
-
-These are the checks that used to need a Pico: that the artifact really contains
-src/, that its layout matches MicroPython's, and that two builds of the same
-tree are identical.
+"""Offline tests for tools/build_uf2.py, the host-side UF2 builder.
 
 Run with: ./tools/run-tests
 """
@@ -190,8 +186,7 @@ class BuildTest(unittest.TestCase):
 
     @needs_littlefs
     def test_drops_the_bases_own_filesystem(self):
-        """A full-flash dump can be reused as the base: its stale filesystem
-        must not survive into the new artifact."""
+        """A dump reused as a base must not carry its filesystem over."""
         stale = b.split_into_blocks(b.XIP_BASE + 64 * 1024, b"\xaa" * 512)
         # Read before opening for write: "wb" truncates.
         dump = b.uf2_bytes(b.parse_uf2(self.base)[0] + stale)

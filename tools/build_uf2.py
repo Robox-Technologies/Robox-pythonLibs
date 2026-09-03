@@ -1,36 +1,7 @@
 #!/usr/bin/env python3
 """Build a Robox release UF2 on the host, with no Pico attached.
 
-`picotool save` needs a board in BOOTSEL mode because it reads the artifact back
-off real flash. Nothing in that dump has to come from hardware, though: it is a
-stock MicroPython build plus a littlefs image holding the files from src/. This
-script assembles those two directly, so a release can be built (and diffed, and
-built in CI) without a board.
-
-Flash map of the 2 MB Pico this firmware targets:
-
-    0x10000000  +--------------------------------+
-                | MicroPython firmware           |  stock RPI_PICO UF2
-    0x100a0000  +--------------------------------+
-                | littlefs filesystem, 1408 KiB  |  built here from src/
-    0x10200000  +--------------------------------+
-
-The split is MicroPython's, not ours: the rp2 port puts the filesystem in the
-top MICROPY_HW_FLASH_STORAGE_BYTES of flash (1408 KiB on RPI_PICO), so the base
-is flash_size - storage_size. Rather than trust that constant, the firmware is
-asked where its filesystem lives -- MicroPython records the window as an
-"embedded drive" in its binary-info block, which picotool reads out of a plain
-file. The numbers above are only the fallback for when picotool is not
-installed; --fs-base/--fs-size override either, and `tools/pico fs-layout`
-prints what a connected board actually reports.
-
-Subcommands:
-
-    build_uf2.py build [-o out.uf2] [--base firmware.uf2] [--src src]
-    build_uf2.py fetch [--version 1.24.1]
-    build_uf2.py inspect <file.uf2>
-
-Run via `tools/pico build`, `tools/pico firmware`, `tools/pico inspect`.
+Stock MicroPython firmware plus a littlefs image of src/. See README.md.
 """
 
 import argparse
@@ -239,11 +210,7 @@ def read_littlefs(image):
 
 
 def is_excluded(rel_path, patterns):
-    """Match a pattern against the whole path or any single component.
-
-    Same rule as tools/pico's is_excluded, which passes its list in with
-    --exclude so the two stay in step.
-    """
+    """Match a pattern against the whole path or any single component."""
     parts = rel_path.split("/")
     for pattern in patterns:
         pattern = pattern.strip("/")
@@ -292,13 +259,7 @@ def firmware_version(src_dir):
 
 
 def http_get(url):
-    """Fetch a URL, preferring curl.
-
-    A python.org interpreter on macOS ships without a usable CA store until
-    "Install Certificates.command" is run, so urllib fails on TLS where curl --
-    which uses the system trust store -- is fine. Try curl first and keep urllib
-    as the fallback for machines without it.
-    """
+    """Fetch a URL, preferring curl: urllib has no CA store on stock macOS."""
     if shutil.which("curl"):
         result = subprocess.run(
             ["curl", "--fail", "--silent", "--show-error", "--location",
@@ -363,14 +324,7 @@ def resolve_version(version):
 
 
 def detect_layout(uf2_path):
-    """Read the filesystem window out of the firmware's own binary info.
-
-    MicroPython records its filesystem as an "embedded drive" in the binary-info
-    block, and picotool prints it for a UF2 file without needing a board. That
-    beats hardcoding a per-board constant: a Pico W or Pico 2 base firmware,
-    whose filesystem starts somewhere else entirely, comes out right by itself.
-    Returns (fs_base, fs_bytes), or None when picotool is missing or silent.
-    """
+    """Read (fs_base, fs_bytes) out of the firmware's binary info, or None."""
     if not shutil.which("picotool"):
         return None
     try:
@@ -495,8 +449,7 @@ def cmd_build(args):
 
 
 def resolve_layout(args, base_path):
-    """Where the filesystem goes: explicit flags win, then the firmware, then
-    the RPI_PICO defaults."""
+    """Filesystem window: explicit flags win, then the firmware, then defaults."""
     if args.fs_base is not None and args.fs_size is not None:
         return args.fs_base, args.fs_size
 
