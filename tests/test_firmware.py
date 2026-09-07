@@ -20,7 +20,7 @@ sys.path.insert(0, SRC)
 
 import protocol as p  # noqa: E402
 import calibration as _cal  # noqa: E402
-from colors import STANDARD_COLORS  # noqa: E402
+from colors import STANDARD_COLORS, closest_color_name  # noqa: E402
 
 
 class FakeUart:
@@ -446,6 +446,14 @@ class FakeColorSensor:
         if len(self.readings) > 1:
             return self.readings.pop(0)
         return self.readings[0]
+
+    def closest_colour_name(self, rgb=None):
+        """Mirrors roboxlib.ColorSensor.closest_colour_name: a fresh reading
+        by default, matched against this sensor's own calibrated palette
+        (falling back to STANDARD_COLORS for anything not in it)."""
+        if rgb is None:
+            rgb = self.readColor()
+        return closest_color_name(rgb, self.palette)
 
     def calibrate_white(self):
         self.calibration["white"] = [999.0, 999.0, 999.0]
