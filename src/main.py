@@ -13,7 +13,6 @@ from roboxlib import (
     save_motor_reverse,
     save_motor_swap,
 )
-from colors import closest_color_name
 from communication import (
     USBCommunication,
     BluetoothCommunuication,
@@ -415,7 +414,7 @@ def send_color_if_due():
             "r": round(r),
             "g": round(g),
             "b": round(b),
-            "name": closest_color_name((r, g, b), colorSensor.palette),
+            "name": colorSensor.closest_colour_name((r, g, b)),
         },
     )
 

@@ -18,6 +18,7 @@ from calibration import DEFAULT as _CALIBRATION_DEFAULT
 from calibration import normalise as _normalise_calibration
 from calibration import scale as _scale_calibration
 from colors import STANDARD_COLORS as _STANDARD_COLORS
+from colors import closest_color_name as _closest_color_name
 from matrix import fit as _fit_matrix
 from matrix import apply as _apply_matrix
 
@@ -435,6 +436,13 @@ class ColorSensor:
         else:
             r, g, b = self._calibrated_rgb(rgb)
             return r, g, b
+
+    def closest_colour_name(self, rgb=None):
+        """The name of the palette colour nearest `rgb` (a fresh reading by
+        default), using this sensor's own calibrated palette."""
+        if rgb is None:
+            rgb = self.readColor()
+        return _closest_color_name(rgb, self.palette)
 
     def _register8(self, register, value=None):
         register |= _COMMAND_BIT
