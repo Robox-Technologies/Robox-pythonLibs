@@ -19,6 +19,8 @@ SRC = os.path.join(os.path.dirname(__file__), "..", "src")
 sys.path.insert(0, SRC)
 
 import protocol as p  # noqa: E402
+import calibration as _cal  # noqa: E402
+from colors import STANDARD_COLORS  # noqa: E402
 
 
 class FakeUart:
@@ -131,6 +133,21 @@ def load_firmware(color_sensor_cls=RaisingColorSensor):
             self.run_motors(0, 0)
 
     roboxlib.Motors = FakeMotors
+
+    def color_calibration_status(sensor):
+        if sensor is None:
+            return {name: False for name in STANDARD_COLORS}
+        status = {}
+        for name in STANDARD_COLORS:
+            if name == "white":
+                status[name] = sensor.calibration["white"] != list(_cal.DEFAULT["white"])
+            elif name == "black":
+                status[name] = sensor.calibration["black"] != list(_cal.DEFAULT["black"])
+            else:
+                status[name] = name in sensor.samples
+        return status
+
+    roboxlib.color_calibration_status = color_calibration_status
 
     saved = {
         name: sys.modules.get(name)
@@ -406,12 +423,24 @@ class TestCommandGating(unittest.TestCase):
 
 
 class FakeColorSensor:
-    """Returns readings from a fixed queue, one per call."""
+    """Returns readings from a fixed queue, one per call.
+
+    calibration/samples mirror the real ColorSensor's shape (see
+    roboxlib.py) closely enough that the real color_calibration_status()
+    logic, reimplemented in load_firmware()'s fake roboxlib module below,
+    exercises the same "is this colour calibrated" rules a real sensor
+    would.
+    """
 
     def __init__(self, readings=((1, 2, 3),)):
         self.readings = list(readings)
         self.calibrated = []
         self.palette = {}
+        self.calibration = {
+            "white": list(_cal.DEFAULT["white"]),
+            "black": list(_cal.DEFAULT["black"]),
+        }
+        self.samples = {}
 
     def readColor(self):
         if len(self.readings) > 1:
@@ -419,21 +448,27 @@ class FakeColorSensor:
         return self.readings[0]
 
     def calibrate_white(self):
+        self.calibration["white"] = [999.0, 999.0, 999.0]
         self.calibrated.append("white")
 
     def calibrate_black(self):
+        self.calibration["black"] = [1.0, 1.0, 1.0]
         self.calibrated.append("black")
 
     def reset_white(self):
+        self.calibration["white"] = list(_cal.DEFAULT["white"])
         self.calibrated.append("white_reset")
 
     def reset_black(self):
+        self.calibration["black"] = list(_cal.DEFAULT["black"])
         self.calibrated.append("black_reset")
 
     def calibrate_palette(self, name):
+        self.samples[name] = (1, 2, 3)
         self.calibrated.append(name)
 
     def reset_palette(self, name):
+        self.samples.pop(name, None)
         self.calibrated.append(name + "_reset")
 
 
@@ -518,6 +553,63 @@ class TestColorCalibration(unittest.TestCase):
         self.assertEqual(
             [r["message"] for r in replies(ble) if r["type"] == "error"],
             ["Unknown command: calibrate_color_turquoise"],
+        )
+
+
+class TestColorCalibrationStatus(unittest.TestCase):
+    """get_calibration_colors: one boolean per standard colour, for a
+    client to show which ones still need calibrating."""
+
+    def _status(self, ns, usb):
+        ns["dispatch_command"](usb, "get_calibration_colors")
+        drain(ns)
+        return [
+            r["message"] for r in replies(usb) if r["type"] == "calibration"
+        ][-1]["value"]
+
+    def test_all_false_without_a_sensor(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        self.assertEqual(
+            self._status(ns, usb),
+            {name: False for name in STANDARD_COLORS},
+        )
+
+    def test_all_false_when_never_calibrated(self):
+        sensor = FakeColorSensor()
+        ns = load_firmware(color_sensor_cls=lambda: sensor)
+        usb = ns["usb"]
+
+        self.assertEqual(
+            self._status(ns, usb),
+            {name: False for name in STANDARD_COLORS},
+        )
+
+    def test_reflects_exactly_the_colours_calibrated_so_far(self):
+        sensor = FakeColorSensor()
+        ns = load_firmware(color_sensor_cls=lambda: sensor)
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "calibrate_color_red")
+        ns["dispatch_command"](usb, "calibrate_color_white")
+
+        expected = {name: False for name in STANDARD_COLORS}
+        expected["red"] = True
+        expected["white"] = True
+        self.assertEqual(self._status(ns, usb), expected)
+
+    def test_reset_clears_the_flag_again(self):
+        sensor = FakeColorSensor()
+        ns = load_firmware(color_sensor_cls=lambda: sensor)
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "calibrate_color_black")
+        ns["dispatch_command"](usb, "reset_color_black")
+
+        self.assertEqual(
+            self._status(ns, usb),
+            {name: False for name in STANDARD_COLORS},
         )
 
 

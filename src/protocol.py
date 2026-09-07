@@ -57,6 +57,7 @@ COMMAND_NAMES = (
     "firmware_check",
     "start_program",
     "get_calibration_motors",
+    "get_calibration_colors",
     "reverse_motor_0_0",
     "reverse_motor_0_1",
     "reverse_motor_1_0",

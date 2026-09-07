@@ -22,6 +22,7 @@ if "" in sys.path:
 from roboxlib import (
     ColorSensor,
     Motors,
+    color_calibration_status,
     load_motor_calibration,
     load_motor_reverse,
     load_motor_swap,
@@ -163,11 +164,19 @@ def _motor_calibration():
     }
 
 
+def _color_calibration():
+    """One boolean per standard colour (plus white/black), so a client can
+    show which ones still need calibrating without asking one at a time.
+    All False when there's no colour sensor connected."""
+    return color_calibration_status(colorSensor)
+
+
 # One entry per calibration a client can read back with
 # `get_calibration_<name>`. Add to this and to COMMAND_NAMES in protocol.py
 # together when a new calibration needs to be queryable.
 CALIBRATION_GETTERS = {
     "motors": _motor_calibration,
+    "colors": _color_calibration,
 }
 
 

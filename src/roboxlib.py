@@ -487,6 +487,29 @@ class ColorSensor:
         subtracted = [rgb[i] - black[i] for i in range(3)]
         return _apply_matrix(self._matrix, subtracted)
 
+
+def color_calibration_status(sensor):
+    """Whether each standard colour currently has calibration data, keyed by
+    name. False for every colour when there's no sensor at all -- nothing
+    could have been calibrated without one. White/black are checked against
+    their own default extremes (there's no separate calibrated flag for
+    them, same as everywhere else in this module); every other colour is
+    exactly what reset_palette() already treats "never calibrated" as:
+    absent from `sensor.samples`.
+    """
+    if sensor is None:
+        return {name: False for name in _STANDARD_COLORS}
+    status = {}
+    for name in _STANDARD_COLORS:
+        if name == "white":
+            status[name] = sensor.calibration["white"] != list(_CALIBRATION_DEFAULT["white"])
+        elif name == "black":
+            status[name] = sensor.calibration["black"] != list(_CALIBRATION_DEFAULT["black"])
+        else:
+            status[name] = name in sensor.samples
+    return status
+
+
 def rgb_to_hsv(r, g, b):
     r, g, b = r / 255.0, g / 255.0, b / 255.0  # Normalize to [0,1]
     max_c = max(r, g, b)
