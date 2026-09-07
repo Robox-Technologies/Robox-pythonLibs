@@ -121,7 +121,17 @@ def load_firmware(color_sensor_cls=RaisingColorSensor):
         """Stands in for roboxlib.Motors. Records what run_motors was told
         to do, rather than reapplying the calibration math, since that math
         is roboxlib's own responsibility and not what dispatch_command tests
-        are checking here."""
+        are checking here. Mirrors the real Motors.__init__ by reading
+        calibration/reverse/swap at construction time, since main.py builds
+        one of these as a module-level singleton and later dispatch code
+        writes straight to its attributes."""
+
+        def __init__(self):
+            self.calibration = roboxlib.load_motor_calibration()
+            self.reverse = [
+                roboxlib.load_motor_reverse(0), roboxlib.load_motor_reverse(1)
+            ]
+            self.swap = roboxlib.load_motor_swap()
 
         def run_motors(self, left_speed, right_speed):
             roboxlib.motor_runs.append((left_speed, right_speed))

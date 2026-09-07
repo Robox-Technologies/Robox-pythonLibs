@@ -76,6 +76,10 @@ try:
 except Exception:
     colorSensor = None
 
+# Shared, not rebuilt per command: recreating it re-claimed the PWM pins
+# each time, glitching whatever the previous instance was still driving.
+motors = Motors()
+
 
 # ----------------------
 # Communication setup
@@ -214,7 +218,7 @@ def dispatch_command(comm, command):
         # fight the program for the same pins. Stopped unconditionally, before
         # either check below, since the safety concern applies even to a
         # start attempt that is about to be refused.
-        Motors().stop_motors()
+        motors.stop_motors()
 
         if program_running:
             comm.write_message("error", "A program is already running")
@@ -285,12 +289,14 @@ def dispatch_command(comm, command):
 
     # ----------------------
     # Motor calibration: a left/right trim bias, applied by every Motors
-    # instance a user program creates (see Motors.run_motors in roboxlib.py).
-    # No live hardware object is needed here, unlike colour calibration: this
-    # only ever persists a number for the next Motors() to pick up.
+    # instance a user program creates (see Motors.run_motors in roboxlib.py),
+    # plus the `motors` singleton above, which is never recreated to reread it.
     # ----------------------
     elif command.startswith(CALIBRATE_MOTORS_PREFIX):
-        save_motor_calibration(parse_motor_calibration(command))
+        bias = parse_motor_calibration(command)
+        assert bias is not None  # already validated by is_command_name
+        save_motor_calibration(bias)
+        motors.calibration = bias
         comm.write_message("calibrated", "motors")
 
     # ----------------------
@@ -306,7 +312,9 @@ def dispatch_command(comm, command):
     elif command.startswith("reverse_motor_"):
         index_str, value_str = command[len("reverse_motor_"):].split("_")
         index = int(index_str)
-        save_motor_reverse(index, value_str == "1")
+        value = value_str == "1"
+        save_motor_reverse(index, value)
+        motors.reverse[index] = value
         comm.write_message("calibrated", "reverse_%d" % index)
 
     # ----------------------
@@ -315,36 +323,29 @@ def dispatch_command(comm, command):
     # or `swap_motors_1`, same absolute-set reasoning as reversal above.
     # ----------------------
     elif command.startswith("swap_motors_"):
-        value_str = command[len("swap_motors_"):]
-        save_motor_swap(value_str == "1")
+        value = command[len("swap_motors_"):] == "1"
+        save_motor_swap(value)
+        motors.swap = value
         comm.write_message("calibrated", "swap")
 
     # ----------------------
-    # Motor test-drive: drive both motors at a fixed speed in the named
-    # direction, so a client can see the robot move the way it says it will,
-    # to check wiring, swap or a calibration change. Left/right pivot in
-    # place (wheels opposite ways) rather than skid on one wheel, so a turn
-    # is visible even at this fixed speed. A fresh Motors() each time rather
-    # than one kept around, so it always picks up whatever calibration is
-    # persisted right now (see Motors.__init__ in roboxlib.py) instead of a
-    # stale snapshot from whenever this module first ran. PWM keeps driving
-    # the pins after the object is dropped, so nothing needs to be kept alive
-    # here.
+    # Motor test-drive: fixed speed, named direction, to check wiring/swap/
+    # calibration. Left/right pivot in place rather than skid on one wheel.
     # ----------------------
     elif command == "move_forward":
-        Motors().run_motors(TEST_MOTOR_SPEED, TEST_MOTOR_SPEED)
+        motors.run_motors(TEST_MOTOR_SPEED, TEST_MOTOR_SPEED)
 
     elif command == "move_backward":
-        Motors().run_motors(-TEST_MOTOR_SPEED, -TEST_MOTOR_SPEED)
+        motors.run_motors(-TEST_MOTOR_SPEED, -TEST_MOTOR_SPEED)
 
     elif command == "move_left":
-        Motors().run_motors(-TEST_MOTOR_SPEED, TEST_MOTOR_SPEED)
+        motors.run_motors(-TEST_MOTOR_SPEED, TEST_MOTOR_SPEED)
 
     elif command == "move_right":
-        Motors().run_motors(TEST_MOTOR_SPEED, -TEST_MOTOR_SPEED)
+        motors.run_motors(TEST_MOTOR_SPEED, -TEST_MOTOR_SPEED)
 
     elif command == "stop_motors":
-        Motors().stop_motors()
+        motors.stop_motors()
 
     # ----------------------
     # Calibration readback: one command, one reply shape, for every
