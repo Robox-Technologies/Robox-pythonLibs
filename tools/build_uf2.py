@@ -610,6 +610,35 @@ def cmd_fetch(args):
     return 0
 
 
+def cmd_verify_release(args):
+    """The core regression test for the frozen-firmware migration made concrete:
+    a routine release must not carry a single block in the filesystem region,
+    or it would silently wipe config.json/program.py on every board it lands
+    on -- exactly the bug this whole migration exists to fix. See
+    docs/RELEASE.md.
+    """
+    blocks, _family = parse_uf2(args.file)
+    fs_base, fs_size = resolve_layout(args, args.file)
+    fs_start = XIP_BASE + fs_base
+
+    offenders = [addr for addr, _ in blocks if addr >= fs_start]
+    if offenders:
+        die("%s has %d block(s) at/above the filesystem base 0x%08x "
+            "(0x%08x..0x%08x) -- this would wipe config.json/program.py on "
+            "every board it's flashed onto. A release must contain firmware "
+            "blocks only."
+            % (rel_to_repo(args.file), len(offenders), fs_start,
+               min(offenders), max(offenders)))
+
+    top = max((addr + len(payload) for addr, payload in blocks), default=XIP_BASE)
+    print("  ok %s: %d block(s), all below the filesystem base 0x%08x "
+          "(firmware ends at 0x%08x, %d KiB of headroom before the %d KiB "
+          "filesystem)"
+          % (rel_to_repo(args.file), len(blocks), fs_start, top,
+             (fs_start - top) // 1024, fs_size // 1024))
+    return 0
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -656,6 +685,14 @@ def main(argv):
     inspect.add_argument("file")
     add_layout_flags(inspect)
     inspect.set_defaults(func=cmd_inspect)
+
+    verify_release = subs.add_parser(
+        "verify-release",
+        help="fail unless a UF2 has zero blocks in the filesystem region",
+    )
+    verify_release.add_argument("file")
+    add_layout_flags(verify_release)
+    verify_release.set_defaults(func=cmd_verify_release)
 
     args = parser.parse_args(argv)
     return args.func(args)

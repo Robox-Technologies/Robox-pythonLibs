@@ -216,38 +216,36 @@
     },
 
     // ===================================================================
-    // UF2 release workflow (see README.md)
+    // UF2 release workflow (see README.md and docs/RELEASE.md)
     //
-    // "Build release UF2 (no board)" is the normal path: it assembles the
-    // artifact on this machine. The BOOTSEL/picotool tasks below stay for
-    // snapshotting a physical board and for flashing.
+    // main.py/roboxlib.py/etc. are frozen into a custom-compiled firmware,
+    // so the result carries no filesystem blocks and can't touch
+    // config.json/program.py. A frozen main.py autoruns on its own
+    // (confirmed on real hardware), so the same build works for a
+    // brand-new blank board too -- there's no separate factory image
+    // (`./tools/pico build`/`factory` are just aliases for `release`). The
+    // BOOTSEL/picotool tasks below stay for snapshotting a physical board
+    // and for flashing.
     // ===================================================================
     {
-      "label": "UF2: Build release (no board needed)",
-      "detail": "Pack src/ into a littlefs image, bolt it onto the stock MicroPython firmware, and write build/robox-<version>.uf2. No Pico, no BOOTSEL.",
+      "label": "UF2: Check firmware toolchain",
+      "detail": "Checks Docker (or a local ARM toolchain) and the MicroPython submodule. Run this first.",
       "type": "shell",
-      "command": "./tools/pico build",
+      "command": "./tools/pico fw-doctor",
       "problemMatcher": []
     },
     {
-      "label": "UF2: Build release (offline, no download)",
-      "detail": "Same build, but fails instead of fetching the base MicroPython UF2. Run 'UF2: Download base MicroPython firmware' once first.",
+      "label": "UF2: Build release (the file end users update with)",
+      "detail": "Compiles custom firmware with main.py/roboxlib.py/etc. frozen in, and writes build/robox-<version>.uf2 -- verified to carry zero filesystem blocks, so config.json/program.py always survive. See docs/RELEASE.md.",
       "type": "shell",
-      "command": "./tools/pico build --offline",
+      "command": "./tools/pico release",
       "problemMatcher": []
     },
     {
-      "label": "UF2: Build filesystem-only update",
-      "detail": "A small UF2 with just src/ -- flashes the libraries onto a board that already runs the pinned MicroPython, leaving the firmware alone.",
+      "label": "UF2: Build release (local toolchain, no Docker)",
+      "detail": "Same as above, but compiles with arm-none-eabi-gcc/cmake straight off PATH instead of Docker.",
       "type": "shell",
-      "command": "./tools/pico build --no-base --sparse build/robox-libs.uf2",
-      "problemMatcher": []
-    },
-    {
-      "label": "UF2: Download base MicroPython firmware",
-      "detail": "Cache the pinned stock RPI_PICO UF2 in build/firmware/ so builds work offline.",
-      "type": "shell",
-      "command": "./tools/pico firmware",
+      "command": "./tools/pico release --local",
       "problemMatcher": []
     },
     {
@@ -255,6 +253,13 @@
       "detail": "Show a UF2's flash layout and list the files in its filesystem. Works on a build or on a board dump.",
       "type": "shell",
       "command": "./tools/pico inspect '${input:uf2Path}'",
+      "problemMatcher": []
+    },
+    {
+      "label": "UF2: Verify a release is filesystem-safe",
+      "detail": "Fails unless the given UF2 has zero blocks in the filesystem region. 'UF2: Build release' already runs this automatically.",
+      "type": "shell",
+      "command": "./tools/build_uf2.py verify-release '${input:uf2Path}'",
       "problemMatcher": []
     },
     {
@@ -273,7 +278,7 @@
     },
     {
       "label": "UF2: Capture from board (sync -> BOOTSEL -> save)",
-      "detail": "The old hardware workflow: upload src/, reboot to BOOTSEL, dump the whole flash to build/*.uf2. Use it to snapshot a board; prefer 'UF2: Build release (no board needed)' for releases.",
+      "detail": "The old hardware workflow: upload src/, reboot to BOOTSEL, dump the whole flash to build/*.uf2. Use it to snapshot a board; prefer 'UF2: Build release (the file end users update with)' for releases.",
       "dependsOrder": "sequence",
       "dependsOn": [
         "Pico: Upload src/ to board",

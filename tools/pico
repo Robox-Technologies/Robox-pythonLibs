@@ -19,13 +19,26 @@
 #   ./tools/pico reset                hard reset the Pico
 #   ./tools/pico stop                 interrupt the running program (Ctrl-C)
 #   ./tools/pico bootsel              reboot into BOOTSEL / mass-storage mode
-#   ./tools/pico build [out.uf2]      build a release UF2 from src/ -- no board needed
-#   ./tools/pico firmware [version]   download the base MicroPython UF2
+#   ./tools/pico firmware [version]   download the base MicroPython UF2 (legacy/
+#                                      manual use only -- release builds their own)
 #   ./tools/pico inspect <file.uf2>   list the files inside a UF2
 #   ./tools/pico uf2 [out.uf2]        dump the Pico's flash to a UF2 (needs BOOTSEL)
 #   ./tools/pico flash <file.uf2>     load a UF2 onto a Pico in BOOTSEL mode
 #   ./tools/pico fs-layout            print the board's real filesystem geometry
 #   ./tools/pico doctor               check that the toolchain is installed
+#
+#   ./tools/pico fw-doctor             check the firmware cross-compile toolchain
+#   ./tools/pico fw-build [--local]    compile custom firmware (frozen main.py +
+#                                      core libs) via Docker (default) or a local
+#                                      ARM toolchain -- see docs/RELEASE.md
+#   ./tools/pico release [out.uf2]    fw-build, then THE file to distribute: same
+#                                      artifact for a blank board or an existing
+#                                      one -- frozen main.py runs regardless of
+#                                      the filesystem, and this carries zero
+#                                      filesystem blocks, so config.json/program.py
+#                                      always survive. `build`/`factory` are
+#                                      aliases for this -- there's no longer a
+#                                      separate "factory image".
 #
 # Env overrides:
 #   PICO_PORT   serial port to use (default: auto)
@@ -47,6 +60,24 @@ EXCLUDES=(
   ".gitkeep"
   "lib/picozero-0.4.2.dist-info"
 )
+
+# ---------------------------------------------------------------------------
+# custom firmware build (frozen main.py + core libs -- see docs/RELEASE.md)
+# ---------------------------------------------------------------------------
+FW_DIR="$REPO_ROOT/firmware"
+FW_MANIFEST="$FW_DIR/manifest.py"
+FW_MICROPYTHON="$FW_DIR/vendor/micropython"
+FW_PORT_DIR="$FW_MICROPYTHON/ports/rp2"
+# Docker and --local get their own build dirs, for both the rp2 port build
+# and mpy-cross. They're never interchangeable: a Docker (Linux) build
+# leaves an ELF mpy-cross and a CMake cache full of container paths, a
+# --local (macOS/host) build leaves a Mach-O and host paths like
+# /opt/homebrew/bin/cmake. Sharing one directory between them means the
+# second toolchain to run reuses the first's stale CMake cache or wrong-OS
+# binary and fails outright -- hit for real switching from --local to
+# Docker on the same checkout. cmd_fw_build sets FW_BUILD_DIR/FW_OUT/
+# FW_MPY_CROSS_BUILD_DIR to the pair actually used each time it runs.
+FW_DOCKER_IMAGE="robox-fw-build"
 
 # ---------------------------------------------------------------------------
 # output helpers
@@ -342,27 +373,130 @@ cmd_bootsel() {
   ok "The RPI-RP2 volume should appear shortly."
 }
 
-# Build the release UF2 on this machine: stock MicroPython firmware + a littlefs
-# image of src/. No board, no BOOTSEL, no picotool -- and the output is
-# reproducible, unlike a flash dump, which also carries whatever program.py and
-# calibration data the board happened to have.
-cmd_build() {
-  find_python
-  local args=() pattern
-  # Hand the sync exclusions to the builder so the UF2 contains exactly what
-  # `pico sync` would upload. One list, one behaviour.
-  for pattern in "${EXCLUDES[@]}"; do
-    args+=(--exclude "$pattern")
-  done
-  # A bare first argument is the output path; anything starting with '-' is a
-  # flag for the builder and passes straight through.
-  if [[ $# -ge 1 && "$1" != -* ]]; then
-    args+=(-o "$1")
-    shift
+cmd_fw_require_submodule() {
+  [[ -f "$FW_PORT_DIR/Makefile" ]] || die \
+    "MicroPython submodule not present -> git submodule update --init --recursive firmware/vendor/micropython"
+}
+
+cmd_fw_doctor() {
+  local rc=0
+  printf 'Robox custom-firmware toolchain check\n\n'
+
+  cmd_fw_require_submodule 2>/dev/null && ok "micropython submodule  checked out" ||
+    { warn "micropython submodule  MISSING -> git submodule update --init --recursive firmware/vendor/micropython"; rc=1; }
+
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    ok "docker                 reachable"
+    if docker image inspect "$FW_DOCKER_IMAGE" >/dev/null 2>&1; then
+      ok "docker image           $FW_DOCKER_IMAGE built"
+    else
+      warn "docker image           not built -> docker build -t $FW_DOCKER_IMAGE $FW_DIR"
+    fi
+  else
+    warn "docker                 not available (daemon not running, or not installed)"
+    if command -v arm-none-eabi-gcc >/dev/null 2>&1 && command -v cmake >/dev/null 2>&1; then
+      ok "local toolchain        arm-none-eabi-gcc + cmake present -> 'fw-build --local' will work"
+    else
+      warn "local toolchain        also missing (arm-none-eabi-gcc/cmake) -- need Docker or a local install"
+      rc=1
+    fi
   fi
-  # ${a[@]+...}: bash 3.2 treats an empty array as unbound under `set -u`.
-  "$PY" "$REPO_ROOT/tools/build_uf2.py" build --src "$REPO_ROOT/$SYNC_DIR" \
-    ${args[@]+"${args[@]}"} "$@"
+
+  return $rc
+}
+
+# Compile custom MicroPython firmware with main.py/roboxlib.py/etc. frozen in
+# (see firmware/manifest.py and docs/RELEASE.md). Docker by default, so a
+# release doesn't depend on whatever happens to be on a dev's PATH; --local
+# uses arm-none-eabi-gcc/cmake straight off PATH instead. Sets FW_BUILD_DIR/
+# FW_OUT/FW_MPY_CROSS_BUILD_DIR as globals for the caller (cmd_release etc.)
+# to the pair that was actually just built -- see the note above FW_DIR.
+cmd_fw_build() {
+  cmd_fw_require_submodule
+
+  if [[ "${1:-}" == "--local" ]]; then
+    shift
+    FW_BUILD_DIR="$REPO_ROOT/build/mp-build-local"
+    FW_MPY_CROSS_BUILD_DIR="$FW_MICROPYTHON/mpy-cross/build-local"
+    FW_OUT="$FW_BUILD_DIR/firmware.uf2"
+    mkdir -p "$FW_BUILD_DIR"
+    info "Building custom firmware locally"
+    command -v arm-none-eabi-gcc >/dev/null 2>&1 && command -v cmake >/dev/null 2>&1 ||
+      die "arm-none-eabi-gcc and cmake are required for --local -> ./tools/pico fw-doctor"
+    make -C "$FW_MICROPYTHON/mpy-cross" BUILD="$FW_MPY_CROSS_BUILD_DIR" ||
+      die "mpy-cross build failed"
+    # MICROPY_MPYCROSS is a real environment variable, read via os.getenv()
+    # by makemanifest.py (and checked at cmake-configure time too, via
+    # $ENV{...}, to skip its own auto-build-mpy-cross-at-the-default-path
+    # step) -- not a `make VAR=value` command-line variable.
+    MICROPY_MPYCROSS="$FW_MPY_CROSS_BUILD_DIR/mpy-cross" \
+      make -C "$FW_PORT_DIR" BOARD=RPI_PICO FROZEN_MANIFEST="$FW_MANIFEST" \
+      BUILD="$FW_BUILD_DIR" "$@" ||
+      die "firmware build failed"
+  else
+    FW_BUILD_DIR="$REPO_ROOT/build/mp-build-docker"
+    FW_MPY_CROSS_BUILD_DIR="$FW_MICROPYTHON/mpy-cross/build-docker"
+    FW_OUT="$FW_BUILD_DIR/firmware.uf2"
+    mkdir -p "$FW_BUILD_DIR"
+    docker image inspect "$FW_DOCKER_IMAGE" >/dev/null 2>&1 ||
+      docker build -t "$FW_DOCKER_IMAGE" "$FW_DIR" ||
+      die "docker build of $FW_DOCKER_IMAGE failed"
+    info "Building custom firmware in Docker"
+    docker run --rm -v "$REPO_ROOT:/repo" -w /repo "$FW_DOCKER_IMAGE" sh -c "
+      make -C firmware/vendor/micropython/mpy-cross BUILD=build-docker &&
+      MICROPY_MPYCROSS=/repo/firmware/vendor/micropython/mpy-cross/build-docker/mpy-cross \
+        make -C firmware/vendor/micropython/ports/rp2 BOARD=RPI_PICO \
+        FROZEN_MANIFEST=/repo/firmware/manifest.py BUILD=/repo/build/mp-build-docker
+    " || die "docker-based firmware build failed"
+  fi
+
+  [[ -f "$FW_OUT" ]] || die "build finished but $FW_OUT is missing -- check the build log above"
+  ok "custom firmware -> $FW_OUT"
+}
+
+# THE file end users update with: fw-build's output, renamed and verified to
+# carry zero filesystem-region blocks (build_uf2.py verify-release) -- the
+# concrete guarantee that config.json/program.py survive every update. No
+# littlefs packing here at all; that's what makes the guarantee unconditional
+# rather than something a future change could quietly break.
+cmd_release() {
+  if [[ "${1:-}" == "--local" ]]; then
+    shift
+    cmd_fw_build --local
+  else
+    cmd_fw_build
+  fi
+  find_python
+
+  local out
+  if [[ $# -ge 1 ]]; then
+    out="$1"
+  else
+    local version
+    version="$("$PY" -c "
+import re
+print(re.search(r'CURRENT_FIRMWARE_VERSION\s*=\s*[\"\x27]([^\"\x27]+)', open('$REPO_ROOT/src/main.py').read()).group(1))
+" 2>/dev/null || echo dev)"
+    out="$REPO_ROOT/build/robox-$version.uf2"
+  fi
+
+  mkdir -p "$(dirname "$out")"
+  cp "$FW_OUT" "$out"
+  "$PY" "$REPO_ROOT/tools/build_uf2.py" verify-release "$out" ||
+    die "release failed verification -- see above. Do not distribute $out"
+  ok "release -> $out"
+}
+
+# "factory" is now just a documented alias for `release`: a brand-new/blank
+# board needs nothing special. Confirmed on real hardware -- MicroPython's
+# _boot.py formats an unmounted (erased) filesystem region automatically on
+# first boot, and frozen main.py runs regardless of whatever is or isn't on
+# that filesystem (mp_find_frozen_module is checked before the filesystem
+# lookup, unconditionally). There is no longer a distinct "factory image":
+# the same release UF2 both provisions a blank board and safely updates an
+# already-set-up one.
+cmd_factory() {
+  cmd_release "$@"
 }
 
 # Fetch (and cache in build/firmware/) the stock MicroPython UF2 that `build`
@@ -478,26 +612,26 @@ cmd_doctor() {
   if command -v picotool >/dev/null 2>&1; then
     ok "picotool        $(picotool version 2>&1 | head -1)"
   else
-    warn "picotool        MISSING (needed to dump/flash a board; 'pico build' works without it) -> brew install picotool"
+    warn "picotool        MISSING (needed to dump/flash a board, and to flash a 'pico release' build) -> brew install picotool"
   fi
 
-  # `pico build` needs this to create the littlefs image it packs into the UF2.
+  # Only needed for the legacy board-dump-as-base workflow now (tools/build_uf2.py
+  # build --base <dump>) -- 'pico release'/'build'/'factory' ship the compiled
+  # firmware as-is, with no littlefs image to assemble.
   local py
   for py in python3 python; do command -v "$py" >/dev/null 2>&1 && break; done
   if command -v "$py" >/dev/null 2>&1 && "$py" -c 'import littlefs' >/dev/null 2>&1; then
     ok "littlefs-python $("$py" -c 'import littlefs; print(littlefs.__version__)' 2>&1)"
   else
-    warn "littlefs-python MISSING (needed by 'pico build') -> python3 -m pip install --user -r requirements-dev.txt"
-    rc=1
+    warn "littlefs-python MISSING (only needed for the legacy board-dump-as-base workflow) -> python3 -m pip install --user -r requirements-dev.txt"
   fi
 
   local base
   base="$(find "$REPO_ROOT/build/firmware" -name 'RPI_PICO-*.uf2' 2>/dev/null | head -1)"
   if [[ -n "$base" ]]; then
-    ok "base firmware   $(basename "$base")"
-  else
-    warn "base firmware   not cached -> ./tools/pico firmware   (or 'pico build' downloads it)"
+    ok "stock firmware  $(basename "$base") cached (legacy/manual use only -- 'pico build'/'release' compile their own)"
   fi
+  info "For 'pico build'/'release' (the custom-compiled firmware), run: ./tools/pico fw-doctor"
 
   if command -v code >/dev/null 2>&1; then
     if code --list-extensions 2>/dev/null | grep -qi 'paulober.pico-w-go'; then
@@ -553,8 +687,17 @@ tools/pico -- Thonny-replacement CLI for the Robox Pico firmware.
   pico soft-reset             restart the interpreter (Thonny's "Send EOF")
   pico reset                  hard reset (machine.reset())
 
-  pico build [out.uf2]        build a release UF2 from src/ -- NO BOARD NEEDED
-  pico firmware [version]     download the base MicroPython UF2 into build/firmware
+  pico fw-doctor              check the firmware cross-compile toolchain
+  pico fw-build [--local]     compile custom firmware (frozen main.py + core
+                              libs) via Docker (default) or a local ARM toolchain
+  pico release [out.uf2]     fw-build, then THE file to distribute -- same
+                              artifact for a blank board or an existing one.
+                              Frozen main.py runs regardless of the
+                              filesystem, and this carries zero filesystem
+                              blocks, so config.json/program.py always
+                              survive. `build`/`factory` are aliases.
+  pico firmware [version]     download the base MicroPython UF2 (legacy/
+                              manual use only -- release compiles its own)
   pico inspect <file.uf2>     list the files packed inside a UF2
 
   pico bootsel                reboot into BOOTSEL / mass-storage mode
@@ -564,14 +707,13 @@ tools/pico -- Thonny-replacement CLI for the Robox Pico firmware.
 
 Environment:
   PICO_PORT=/dev/cu.usbmodem1101   pin to a specific port (default: auto)
-  SYNC_DIR=src                     directory uploaded by `pico sync` and `pico build`
+  SYNC_DIR=src                     directory uploaded by `pico sync`
   DRY_RUN=1                        print commands instead of touching hardware
-  ROBOX_BASE_UF2=path.uf2          base firmware for `pico build`
 
-Extra flags after `pico build` reach tools/build_uf2.py, e.g.
-  pico build --offline             fail instead of downloading a base firmware
-  pico build --no-base --sparse    filesystem only: update the libs on a board
-                                   that already runs the right MicroPython
+See docs/RELEASE.md for the full frozen-firmware release story, including why
+`release` and `build`/`factory` produce very different UF2s and why that
+distinction matters (one preserves an existing board's files, the other
+formats them).
 EOF
 }
 
@@ -587,11 +729,14 @@ main() {
     help | -h | --help) usage; return 0 ;;
     doctor)             cmd_doctor "$@"; return $? ;;
     stubs)              cmd_stubs "$@"; return $? ;;
-    build | build-uf2)  cmd_build "$@"; return $? ;;
+    build | factory) cmd_factory "$@"; return $? ;;
     firmware)           cmd_firmware "$@"; return $? ;;
     inspect)            cmd_inspect "$@"; return $? ;;
     uf2 | save)         cmd_uf2 "$@"; return $? ;;
     flash | load)       cmd_flash "$@"; return $? ;;
+    fw-doctor)          cmd_fw_doctor "$@"; return $? ;;
+    fw-build)           cmd_fw_build "$@"; return $? ;;
+    release)            cmd_release "$@"; return $? ;;
   esac
 
   require_mpremote

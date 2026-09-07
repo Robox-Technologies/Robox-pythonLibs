@@ -3,6 +3,22 @@ import _thread
 import machine
 import time
 
+# MicroPython's default sys.path is ['', '.frozen', '/lib']: the filesystem
+# root comes *before* the frozen-module search path, so a loose file here
+# shadows a frozen module of the same name for every `import` this firmware
+# does -- including the roboxlib/communication/etc. imports right below.
+# main.py itself doesn't need this fix (its own boot-time lookup checks
+# frozen modules directly, before ever consulting the filesystem), but
+# nothing it imports gets that treatment. Moving '' to the end, once, before
+# any of those imports, is what makes "the frozen release always wins" true
+# rather than aspirational. Confirmed on real hardware: without this, a
+# board with a loose roboxlib.py left over from before this firmware existed
+# keeps running that old file forever, no matter how many frozen releases
+# it's flashed with.
+if "" in sys.path:
+    sys.path.remove("")
+    sys.path.append("")
+
 from roboxlib import (
     ColorSensor,
     Motors,
