@@ -19,7 +19,9 @@ Quick start with VS Code:
 python3 -m pip install --user -r requirements-dev.txt
 ./tools/pico stubs           # MicroPython stubs for IntelliSense -> typings/
 ./tools/pico doctor          # check the toolchain
-./tools/pico sync            # upload src/ to the Pico
+git submodule update --init --recursive firmware/vendor/micropython
+./tools/pico fw-doctor       # check the firmware cross-compile toolchain
+./tools/pico deploy          # build a custom firmware and flash it onto the Pico
 ./tools/pico repl            # open the MicroPython prompt
 ```
 
@@ -44,8 +46,10 @@ docs/VSCODE.md         editor setup and workflows
 docs/RELEASE.md        the frozen-firmware release process
 ```
 
-Everything under `src/` is uploaded to the Pico's root, so `src/main.py` becomes
-`/main.py` and `src/lib/picozero` becomes `/lib/picozero`.
+Everything under `src/` is frozen into the firmware (see
+[`docs/RELEASE.md`](docs/RELEASE.md)), so `src/main.py` becomes the frozen
+module `main` and so on -- there's no loose copy on the board's filesystem to
+upload or inspect directly.
 
 ## Building the release UF2
 
@@ -90,29 +94,21 @@ drag the UF2 onto the `RPI-RP2` volume or:
 
 The same `release` build works here too — a blank Pico's filesystem region
 is unformatted, and MicroPython's own boot code formats it fresh on first
-mount, same as it always has. `./tools/pico build` and `./tools/pico
-factory` are aliases for `release`, kept for discoverability:
-
-```bash
-./tools/pico build        # alias for release -- build/robox-<version>.uf2
-```
+mount, same as it always has. There's no separate command for this.
 
 ### Capturing a UF2 off a board
 
 Still supported, and still the way to snapshot a board that is already set up
-(it also captures `program.py` and any calibration data, which a clean build
-deliberately leaves out). Needs
-[`picotool`](https://github.com/raspberrypi/picotool) and the board in BOOTSEL
-mode — the task is **`UF2: Capture from board (sync -> BOOTSEL -> save)`**, or:
+(it captures `program.py` and any calibration data exactly as they are on that
+board). Needs [`picotool`](https://github.com/raspberrypi/picotool) and the
+board in BOOTSEL mode — the task is **`UF2: Capture from board`**, or:
 
 ```bash
-./tools/pico sync        # upload src/ to flash
 ./tools/pico bootsel     # reboot into BOOTSEL, no button press needed
 ./tools/pico uf2         # -> build/robox-<timestamp>.uf2
 ```
 
-To do it by hand: transfer `src/` with [Thonny](https://thonny.org) or
-`./tools/pico sync`, unplug the Pico and plug it back in while holding BOOTSEL
+To do it by hand: unplug the Pico and plug it back in while holding BOOTSEL
 (a removable volume named `RPI-RP2` or `NO NAME` appears), then
 
 ```bash

@@ -10,20 +10,18 @@
 #   ./tools/pico repl                 open the MicroPython REPL (Ctrl-] to exit)
 #   ./tools/pico ls [path]            list files on the Pico
 #   ./tools/pico cat <remote>         print a file from the Pico
-#   ./tools/pico sync                 upload src/ -> Pico root (mirrors Thonny)
 #   ./tools/pico push <file> [dest]   upload a single file
 #   ./tools/pico pull <remote> [dest] download a file from the Pico
 #   ./tools/pico run <file>           run a local file on the Pico without saving
-#   ./tools/pico mount                expose src/ as the Pico's filesystem (no flashing)
 #   ./tools/pico wipe                 delete every user file on the Pico
 #   ./tools/pico reset                hard reset the Pico
 #   ./tools/pico stop                 interrupt the running program (Ctrl-C)
 #   ./tools/pico bootsel              reboot into BOOTSEL / mass-storage mode
-#   ./tools/pico firmware [version]   download the base MicroPython UF2 (legacy/
-#                                      manual use only -- release builds their own)
 #   ./tools/pico inspect <file.uf2>   list the files inside a UF2
 #   ./tools/pico uf2 [out.uf2]        dump the Pico's flash to a UF2 (needs BOOTSEL)
 #   ./tools/pico flash <file.uf2>     load a UF2 onto a Pico in BOOTSEL mode
+#   ./tools/pico reflash [file.uf2]   bootsel + wait + flash in one go
+#                                      (default: latest.uf2 at the repo root)
 #   ./tools/pico fs-layout            print the board's real filesystem geometry
 #   ./tools/pico doctor               check that the toolchain is installed
 #
@@ -36,30 +34,19 @@
 #                                      one -- frozen main.py runs regardless of
 #                                      the filesystem, and this carries zero
 #                                      filesystem blocks, so config.json/program.py
-#                                      always survive. `build`/`factory` are
-#                                      aliases for this -- there's no longer a
-#                                      separate "factory image".
+#                                      always survive. There is no separate
+#                                      "factory image".
+#   ./tools/pico deploy [out.uf2]     release + reflash in one step -- build a
+#                                      fresh custom firmware and load it onto
+#                                      the board right away
 #
 # Env overrides:
 #   PICO_PORT   serial port to use (default: auto)
-#   SYNC_DIR    local dir to upload (default: src)
 #
 set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-SYNC_DIR="${SYNC_DIR:-src}"
 PICO_PORT="${PICO_PORT:-auto}"
-
-# Paths under SYNC_DIR that must never reach the Pico. Matched against the
-# whole relative path and against any single path component.
-# The dist-info directory is pip packaging metadata -- useless on the board and
-# it wastes flash.
-EXCLUDES=(
-  ".DS_Store"
-  "__pycache__"
-  ".gitkeep"
-  "lib/picozero-0.4.2.dist-info"
-)
 
 # ---------------------------------------------------------------------------
 # custom firmware build (frozen main.py + core libs -- see docs/RELEASE.md)
@@ -129,7 +116,6 @@ require_mpremote() {
 mp() {
   local rc=0
   # DRY_RUN=1 prints what would be sent to the board and touches no hardware.
-  # Handy for checking which files `sync` would upload.
   if [[ "${DRY_RUN:-0}" == "1" ]]; then
     printf '%s   dry%s mpremote %s\n' "$C_DIM" "$C_OFF" "$*" >&2
     return 0
@@ -214,76 +200,6 @@ cmd_tree() {
   mp fs tree "${1:-/}"
 }
 
-# Upload SYNC_DIR to the Pico root, creating directories as needed.
-cmd_sync() {
-  local src="$REPO_ROOT/$SYNC_DIR"
-  [[ -d "$src" ]] || die "sync dir not found: $src"
-
-  info "Syncing ${C_DIM}$SYNC_DIR/${C_OFF} -> Pico root"
-
-  # 1. Create the directory skeleton in one shot. `fs mkdir` errors on an
-  #    existing directory, which would abort a chained invocation, so do it with
-  #    an idempotent exec instead.
-  local dirs="" d
-  while IFS= read -r d; do
-    [[ -z "$d" ]] && continue
-    if is_excluded "$d"; then continue; fi
-    printf '  mkdir :%s\n' "$d"
-    dirs="${dirs}\"${d}\","
-  done < <(cd "$src" && find . -mindepth 1 -type d | sed 's|^\./||' | sort)
-
-  if [[ -n "$dirs" ]]; then
-    mp exec "
-import os
-for d in [$dirs]:
-    try:
-        os.mkdir(d)
-    except OSError:
-        pass
-" || die "could not create directories on the board"
-  fi
-
-  # 2. Build ONE chained mpremote invocation ('cmd + cmd + cmd'). One process
-  #    means one connection and one raw-REPL entry, instead of paying that cost
-  #    per file.
-  #
-  #    main.py is copied last: if the sync is interrupted part-way, the board is
-  #    left without a main.py rather than with one that imports a module that
-  #    never made it across.
-  local args=() f copied=0
-  while IFS= read -r f; do
-    [[ -z "$f" ]] && continue
-    if is_excluded "$f"; then
-      printf '%s  skip  %s%s\n' "$C_DIM" "$f" "$C_OFF"
-      continue
-    fi
-    printf '  copy  %s\n' "$f"
-    if [[ $copied -gt 0 ]]; then
-      args+=("+")
-    fi
-    args+=(fs cp "$src/$f" ":$f")
-    copied=$((copied + 1))
-  done < <(cd "$src" && find . -type f | sed 's|^\./||' | sort |
-    awk '{ print ($0 == "main.py" ? 1 : 0) "\t" $0 }' | sort -s -k1,1n | cut -f2-)
-
-  [[ $copied -gt 0 ]] || die "nothing to upload from $SYNC_DIR/ (everything excluded?)"
-
-  mp "${args[@]}"
-
-  ok "$copied file(s) uploaded"
-  warn "Run './tools/pico reset' (or the 'Pico: Reset board' task) to restart main.py."
-}
-
-is_excluded() {
-  local candidate="$1" pattern
-  for pattern in "${EXCLUDES[@]}"; do
-    case "$candidate" in
-      "$pattern" | */"$pattern" | "$pattern"/* | */"$pattern"/*) return 0 ;;
-    esac
-  done
-  return 1
-}
-
 cmd_push() {
   [[ $# -ge 1 ]] || die "usage: pico push <local-file> [remote-path]"
   local local_file="$1"
@@ -308,13 +224,6 @@ cmd_run() {
   [[ -f "$1" ]] || die "no such file: $1"
   info "Running $1 on the Pico ${C_DIM}(not saved to flash; Ctrl-C to stop)${C_OFF}"
   mp run "$1"
-}
-
-# Serve SYNC_DIR over the serial link as the Pico's filesystem. Nothing is
-# written to flash, so this is the fastest edit/test loop.
-cmd_mount() {
-  info "Mounting ${C_DIM}$SYNC_DIR/${C_OFF} as the Pico filesystem ${C_DIM}(Ctrl-] to detach)${C_OFF}"
-  mp mount "$REPO_ROOT/$SYNC_DIR" repl
 }
 
 cmd_wipe() {
@@ -487,30 +396,6 @@ print(re.search(r'CURRENT_FIRMWARE_VERSION\s*=\s*[\"\x27]([^\"\x27]+)', open('$R
   ok "release -> $out"
 }
 
-# "factory" is now just a documented alias for `release`: a brand-new/blank
-# board needs nothing special. Confirmed on real hardware -- MicroPython's
-# _boot.py formats an unmounted (erased) filesystem region automatically on
-# first boot, and frozen main.py runs regardless of whatever is or isn't on
-# that filesystem (mp_find_frozen_module is checked before the filesystem
-# lookup, unconditionally). There is no longer a distinct "factory image":
-# the same release UF2 both provisions a blank board and safely updates an
-# already-set-up one.
-cmd_factory() {
-  cmd_release "$@"
-}
-
-# Fetch (and cache in build/firmware/) the stock MicroPython UF2 that `build`
-# uses as its base. Run once; after that builds work offline.
-cmd_firmware() {
-  find_python
-  local args=()
-  if [[ $# -ge 1 && "$1" != -* ]]; then
-    args+=(--version "$1")
-    shift
-  fi
-  "$PY" "$REPO_ROOT/tools/build_uf2.py" fetch ${args[@]+"${args[@]}"} "$@"
-}
-
 # List the files inside a UF2 -- works on anything built here and on a
 # `pico uf2` board dump, so you can see what a release actually contains.
 cmd_inspect() {
@@ -560,6 +445,71 @@ cmd_flash() {
   picotool load "$1"
   picotool reboot || true
   ok "flashed"
+}
+
+# One command for the whole reflash dance: nudge the board into BOOTSEL if
+# it's reachable over serial, wait for the RPI-RP2 volume to actually appear
+# (polled, not a guessed sleep -- BOOTSEL enumeration time varies), then
+# load. `flash`/`bootsel` still exist separately for anyone who wants the
+# steps apart (e.g. to hold BOOTSEL by hand instead).
+#
+# The no-argument default is deliberately just $REPO_ROOT/latest.uf2 -- one
+# fixed, deliberately-named file -- not "most recently modified file
+# matching build/robox-*.uf2". That glob picked up a stale one-off test
+# build during development and flashed it onto a real board, wiping
+# config.json/program.py, because build/ is a scratch directory that
+# accumulates whatever anyone drops in it; recency there means nothing.
+cmd_reflash() {
+  require_picotool
+  local file="${1:-}"
+  if [[ -z "$file" ]]; then
+    file="$REPO_ROOT/latest.uf2"
+    [[ -f "$file" ]] ||
+      die "no UF2 given and no latest.uf2 found -> pass a file, or run './tools/pico release latest.uf2' first"
+    info "No file given -- using $(basename "$file")"
+  fi
+  [[ -f "$file" ]] || die "no such file: $file"
+
+  if picotool info >/dev/null 2>&1; then
+    info "Board is already in BOOTSEL mode"
+  else
+    if find_mpremote; then
+      info "Rebooting the Pico into BOOTSEL mode"
+      mp bootloader >/dev/null 2>&1 || true
+    else
+      warn "mpremote not found -- if the board isn't already in BOOTSEL, unplug it and replug while holding BOOTSEL"
+    fi
+
+    info "Waiting for the RPI-RP2 volume..."
+    local waited_ms=0
+    until picotool info >/dev/null 2>&1; do
+      if [[ $waited_ms -ge 15000 ]]; then
+        die "board never appeared in BOOTSEL mode after 15s -- unplug it and replug while holding BOOTSEL, then retry"
+      fi
+      sleep 0.5
+      waited_ms=$((waited_ms + 500))
+    done
+  fi
+
+  info "Loading $file"
+  picotool load "$file"
+  picotool reboot || true
+  ok "reflashed from $file"
+}
+
+# release + reflash in one step: the fastest path from "changed a src/ file"
+# to "board is running it". Builds and flashes the *same* file, defaulting
+# to latest.uf2 at the repo root (same convention `reflash` alone uses) so
+# a bare `./tools/pico deploy` always does the right thing.
+cmd_deploy() {
+  local local_flag=()
+  if [[ "${1:-}" == "--local" ]]; then
+    local_flag=(--local)
+    shift
+  fi
+  local out="${1:-$REPO_ROOT/latest.uf2}"
+  cmd_release "${local_flag[@]+"${local_flag[@]}"}" "$out"
+  cmd_reflash "$out"
 }
 
 # Deliberately never fatal: this is the command you run *because* something is
@@ -616,8 +566,8 @@ cmd_doctor() {
   fi
 
   # Only needed for the legacy board-dump-as-base workflow now (tools/build_uf2.py
-  # build --base <dump>) -- 'pico release'/'build'/'factory' ship the compiled
-  # firmware as-is, with no littlefs image to assemble.
+  # build --base <dump>) -- 'pico release' ships the compiled firmware as-is,
+  # with no littlefs image to assemble.
   local py
   for py in python3 python; do command -v "$py" >/dev/null 2>&1 && break; done
   if command -v "$py" >/dev/null 2>&1 && "$py" -c 'import littlefs' >/dev/null 2>&1; then
@@ -626,12 +576,7 @@ cmd_doctor() {
     warn "littlefs-python MISSING (only needed for the legacy board-dump-as-base workflow) -> python3 -m pip install --user -r requirements-dev.txt"
   fi
 
-  local base
-  base="$(find "$REPO_ROOT/build/firmware" -name 'RPI_PICO-*.uf2' 2>/dev/null | head -1)"
-  if [[ -n "$base" ]]; then
-    ok "stock firmware  $(basename "$base") cached (legacy/manual use only -- 'pico build'/'release' compile their own)"
-  fi
-  info "For 'pico build'/'release' (the custom-compiled firmware), run: ./tools/pico fw-doctor"
+  info "For 'pico release' (the custom-compiled firmware), run: ./tools/pico fw-doctor"
 
   if command -v code >/dev/null 2>&1; then
     if code --list-extensions 2>/dev/null | grep -qi 'paulober.pico-w-go'; then
@@ -678,11 +623,9 @@ tools/pico -- Thonny-replacement CLI for the Robox Pico firmware.
   pico ls [path]              list files on the Pico
   pico tree [path]            recursive listing
   pico cat <remote>           print a file from the Pico
-  pico sync                   upload src/ -> Pico root (the Thonny workflow)
   pico push <file> [dest]     upload one file
   pico pull <remote> [dest]   download one file
   pico run <file>             run a local file on the Pico without saving it
-  pico mount                  serve src/ as the Pico filesystem (no flash writes)
   pico wipe                   delete every user file on the Pico
   pico soft-reset             restart the interpreter (Thonny's "Send EOF")
   pico reset                  hard reset (machine.reset())
@@ -695,25 +638,22 @@ tools/pico -- Thonny-replacement CLI for the Robox Pico firmware.
                               Frozen main.py runs regardless of the
                               filesystem, and this carries zero filesystem
                               blocks, so config.json/program.py always
-                              survive. `build`/`factory` are aliases.
-  pico firmware [version]     download the base MicroPython UF2 (legacy/
-                              manual use only -- release compiles its own)
+                              survive.
+  pico deploy [out.uf2]      release + reflash in one step
   pico inspect <file.uf2>     list the files packed inside a UF2
 
   pico bootsel                reboot into BOOTSEL / mass-storage mode
   pico uf2 [out.uf2]          dump Pico flash to a UF2 (needs BOOTSEL + picotool)
   pico flash <file.uf2>       load a UF2 onto a Pico in BOOTSEL mode
+  pico reflash [file.uf2]     bootsel + wait + flash in one go -- default file
+                              is latest.uf2 at the repo root
   pico fs-layout              print the board's real filesystem geometry
 
 Environment:
   PICO_PORT=/dev/cu.usbmodem1101   pin to a specific port (default: auto)
-  SYNC_DIR=src                     directory uploaded by `pico sync`
   DRY_RUN=1                        print commands instead of touching hardware
 
-See docs/RELEASE.md for the full frozen-firmware release story, including why
-`release` and `build`/`factory` produce very different UF2s and why that
-distinction matters (one preserves an existing board's files, the other
-formats them).
+See docs/RELEASE.md for the full frozen-firmware release story.
 EOF
 }
 
@@ -729,14 +669,14 @@ main() {
     help | -h | --help) usage; return 0 ;;
     doctor)             cmd_doctor "$@"; return $? ;;
     stubs)              cmd_stubs "$@"; return $? ;;
-    build | factory) cmd_factory "$@"; return $? ;;
-    firmware)           cmd_firmware "$@"; return $? ;;
     inspect)            cmd_inspect "$@"; return $? ;;
     uf2 | save)         cmd_uf2 "$@"; return $? ;;
     flash | load)       cmd_flash "$@"; return $? ;;
+    reflash)            cmd_reflash "$@"; return $? ;;
     fw-doctor)          cmd_fw_doctor "$@"; return $? ;;
     fw-build)           cmd_fw_build "$@"; return $? ;;
     release)            cmd_release "$@"; return $? ;;
+    deploy)             cmd_deploy "$@"; return $? ;;
   esac
 
   require_mpremote
@@ -748,11 +688,9 @@ main() {
     ls)            cmd_ls "$@" ;;
     tree)          cmd_tree "$@" ;;
     cat)           cmd_cat "$@" ;;
-    sync | upload) cmd_sync "$@" ;;
     push)          cmd_push "$@" ;;
     pull | download) cmd_pull "$@" ;;
     run)           cmd_run "$@" ;;
-    mount)         cmd_mount "$@" ;;
     wipe)          cmd_wipe "$@" ;;
     reset | reboot) cmd_reset "$@" ;;
     soft-reset | softreset) cmd_soft_reset "$@" ;;

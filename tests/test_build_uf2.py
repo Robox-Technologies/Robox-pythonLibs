@@ -41,7 +41,7 @@ def fake_base_uf2(path, size=4096):
 
 
 class ExcludeTest(unittest.TestCase):
-    """The builder has to skip exactly what `pico sync` skips."""
+    """--exclude pattern matching for the legacy littlefs-image build path."""
 
     PATTERNS = ["__pycache__", ".DS_Store", "lib/picozero-0.4.2.dist-info"]
 

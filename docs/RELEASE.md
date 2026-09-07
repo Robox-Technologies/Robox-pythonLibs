@@ -77,14 +77,31 @@ brand-new/blank board and an already-set-up one:
   frozen libraries are what actually run, not any stale loose files left
   over from before.
 
-`./tools/pico build` and `./tools/pico factory` are aliases for `release` --
-kept around for discoverability, since "I need an image for a blank board"
-is still a reasonable way to go looking for this command, but there's no
-longer a distinct factory-image code path.
+There's no separate command for provisioning a blank board -- `release` is
+the only build this project ships. (An earlier version of this doc kept
+`build`/`factory` as aliases for discoverability; they were removed since
+they were just extra names for the exact same function, with no distinct
+factory-image code path behind them.)
 
 `./tools/pico uf2` is unchanged: dumps a real board's flash (needs
 `picotool` + BOOTSEL). Still the way to snapshot a board that's already set
 up, including whatever `program.py`/`config.json` it has.
+
+## Getting a build onto a board
+
+- **`./tools/pico deploy [out.uf2]`** -- `release`, then flash it onto
+  whatever's connected, in one command. The everyday path: change something
+  in `src/`, run this, test on the board.
+- **`./tools/pico reflash [file.uf2]`** -- just the flashing half: nudges a
+  connected board into BOOTSEL, polls for the RPI-RP2 volume to actually
+  appear (not a guessed `sleep`), then loads. Defaults to `latest.uf2` at
+  the repo root if no file is given -- deliberately *not* "most recently
+  modified file matching `build/robox-*.uf2`", which picked up a stale
+  one-off test build during development and flashed it onto a real board,
+  wiping `config.json`/`program.py`. `build/` is a scratch directory; recency
+  there means nothing.
+- **`./tools/pico flash <file.uf2>`**/**`bootsel`** still exist separately
+  for anyone who wants the steps apart (e.g. holding BOOTSEL by hand).
 
 ## Build toolchain
 
@@ -129,12 +146,20 @@ extension warning as an error. `./tools/pico fw-build --local` does not add
 this automatically yet; if a local build fails on `emitnx64.c` with a
 `-Wgnu-folding-constant` error, that's why.
 
-Local dev is unaffected by any of this: `./tools/pico sync` still pushes
-loose files from `src/` for fast iteration on a real board. The frozen/loose
-split only matters for the distributed release artifact. The real cost it
-adds: testing a change to `roboxlib.py` etc. *as it will actually ship* now
-needs a full firmware recompile (`fw-build`, a couple of minutes) instead of
-an instant `sync`.
+There used to be a `./tools/pico sync`/`mount` fast-iteration path that
+pushed loose files from `src/` straight to a board's filesystem in seconds,
+for testing without a full rebuild. They're gone now: every one of those
+files is frozen into the release build, so once a board is running
+custom-compiled firmware (which describes every board in normal use now,
+not just distributed ones), a loose copy is dead weight the frozen version
+always wins over -- `sync` had no effect at all against such a board, and
+that confusion is exactly what led to removing it rather than leaving a
+command around that quietly does nothing. The real cost: testing any
+change now needs a full firmware recompile + reflash (`./tools/pico
+deploy`, a couple of minutes) instead of an instant file push. There is no
+faster loop for this project's own source files; `program.py` (the
+user's uploaded program, never frozen) is unaffected and still updates
+instantly through the normal app protocol.
 
 ## Verifying a release
 

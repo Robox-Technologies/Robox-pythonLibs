@@ -89,10 +89,11 @@ Expect **3 errors, 0 warnings** — see [Remaining diagnostics](#remaining-diagn
 Anything more than that (especially unresolved imports) means step 3 didn't
 take.
 
-You can also check what an upload *would* do without any board attached:
+You can also check what any board-touching command *would* do without
+actually doing it:
 
 ```bash
-DRY_RUN=1 ./tools/pico sync
+DRY_RUN=1 ./tools/pico push template_program.py
 ```
 
 ---
@@ -104,7 +105,7 @@ DRY_RUN=1 ./tools/pico sync
 | Shell pane | The **Pico (W) vREPL** terminal | `Pico: REPL` · `./tools/pico repl` |
 | Green **Run** button | `MicroPico > Run current file on Pico` | `Pico: Run current file (not saved to flash)` · `./tools/pico run <file>` |
 | **Stop/Restart** (Ctrl-C) | `Ctrl-C` in the vREPL | `Pico: Stop running program` · `./tools/pico stop` |
-| Files pane → *Upload to /* | Right-click a file → **Upload project to Pico** | `Pico: Upload src/ to board` · `./tools/pico sync` |
+| Files pane → *Upload to /* | — (no MicroPico equivalent now — see below) | `UF2: Build + flash (deploy)` · `./tools/pico deploy` |
 | Upload one file | Right-click → **Upload file to Pico** | `Pico: Upload current file` · `./tools/pico push <file>` |
 | Files pane → *Download to …* | Right-click a remote file → **Download** | `Pico: Download a file from board` · `./tools/pico pull <path>` |
 | Browsing the Pico's files | MicroPico's remote filesystem view | `Pico: List files on board` · `./tools/pico tree` |
@@ -112,11 +113,17 @@ DRY_RUN=1 ./tools/pico sync
 | Unplug/replug (hard reset) | `MicroPico > Hard reset` | `Pico: Reset board` · `./tools/pico reset` |
 | *Tools → Manage packages* | `MicroPico > Install package` | `mpremote mip install <pkg>` |
 | Deleting everything before reflashing | — | `Pico: Wipe board filesystem` · `./tools/pico wipe` |
-| — (no Thonny equivalent) | — | `Pico: Mount src/ as board filesystem` · `./tools/pico mount` |
 
 Run tasks with `Cmd/Ctrl+Shift+P` → **Tasks: Run Task**.
-`Pico: Upload src/ to board` is the default build task, so `Cmd/Ctrl+Shift+B`
+`UF2: Build + flash (deploy)` is the default build task, so `Cmd/Ctrl+Shift+B`
 runs it directly.
+
+MicroPico's own Upload/Download/right-click-a-file features still work for
+poking at loose files (e.g. `program.py`, `config.json`), since those are
+genuinely on the board's filesystem. They just don't do anything useful for
+`src/`'s own files any more — those are frozen into the firmware, not
+uploaded (see `docs/RELEASE.md`), so **MicroPico's "Upload project to Pico"
+button and `syncFolder` setting should not be used for this repo's `src/`.**
 
 ### Suggested keybindings
 
@@ -134,10 +141,10 @@ to get Thonny's muscle memory back:
     "when": "editorLangId == python"
   },
   {
-    // Upload the whole project
+    // Build a fresh firmware and flash it
     "key": "shift+f5",
     "command": "workbench.action.tasks.runTask",
-    "args": "Pico: Upload src/ to board"
+    "args": "UF2: Build + flash (deploy)"
   },
   {
     "key": "ctrl+shift+r",
@@ -155,39 +162,28 @@ The `args` strings must match the task labels exactly.
 
 ### Editing the firmware (`src/main.py`, `roboxlib.py`, `communication.py`)
 
-The straightforward loop is upload-and-reset:
+Every file in `src/` (except `lib/picozero`, which is frozen too, and
+`template_program.py`, which isn't part of the firmware at all) is frozen
+into the firmware — see `docs/RELEASE.md`. There's no loose-file upload
+step any more: `main.py`, `roboxlib.py`, etc. only exist as compiled-in
+frozen modules on a board running this project's firmware, and a same-named
+loose file would be dead weight the frozen version always wins over. So the
+loop is build-and-flash, not upload-and-reset:
 
 ```bash
-./tools/pico sync         # copy src/ -> Pico flash (one connection, main.py last)
-./tools/pico reset        # main.py reruns
+./tools/pico deploy       # release (compile) + flash, one command
 ```
 
-Or run both plus a REPL in one step with the task
-**`Pico: Upload src/ then open REPL`** — the closest thing to Thonny's green Run
-button.
+or the task **`UF2: Build + flash (deploy)`**. This takes a couple of
+minutes (a real firmware compile), not seconds — there is no faster
+loop for these files. `./tools/pico fw-doctor` checks the toolchain first if
+something's wrong (needs Docker, or `arm-none-eabi-gcc`/`cmake` for
+`./tools/pico deploy --local`).
 
-There's also a no-flash-writes loop for rapid iteration:
-
-```bash
-./tools/pico mount        # serves src/ from your machine over the serial link
-```
-
-Understand what this actually does before relying on it:
-
-- Your local `src/` is mounted at **`/remote`** on the board, and the working
-  directory is changed to it. The board's own flash `/` and `/lib` are still
-  there and still on `sys.path`.
-- It does **not** replace `main.py`. Nothing of yours runs automatically. At the
-  prompt, `import main` runs `/remote/main.py` (the cwd is on `sys.path`).
-- `Ctrl-D` soft-reboots and mpremote re-establishes the mount afterwards — but
-  the board's *flash* `main.py` has already run by then. So `Ctrl-D` is not a
-  "rerun my edited main.py" button; `import main` is.
-- `/remote/lib` is **not** on `sys.path`, so `from picozero import ...` still
-  resolves from the board's flash `/lib`, not from your `src/lib`.
-- A hard reset or unplug drops the mount.
-
-So: `mount` is good for poking at `roboxlib` interactively against live
-hardware. Use `sync` for anything you want to persist or test end-to-end.
+`config.json`/`program.py` are the only things that stay loose on the
+board's filesystem, and `deploy`/`release` never touch them (verified: the
+release UF2 carries zero filesystem-region blocks). `push`/`pull` still work
+for poking at those directly.
 
 ### Testing a robot program
 
@@ -200,58 +196,49 @@ Bluetooth/USB command dance, run it directly:
 ```
 
 This executes the file from RAM with the real `roboxlib` imports resolved from
-the Pico's flash, and streams `print()` output back to your terminal. `Ctrl-C`
-stops it.
+the frozen firmware, and streams `print()` output back to your terminal.
+`Ctrl-C` stops it.
 
 ### Building a release UF2
 
-No board required. The artifact is a stock MicroPython build plus a littlefs
-image of `src/`, and `tools/build_uf2.py` assembles both on your machine:
-
-**Tasks: Run Task → `UF2: Build release (no board needed)`** — or
-`./tools/pico build`.
-
-It writes `build/robox-<version>.uf2` (version taken from
-`CURRENT_FIRMWARE_VERSION` in `src/main.py`), then verifies its own output by
-parsing the UF2 back and mounting the filesystem inside it. Two builds of the
-same tree are byte-identical.
-
-The first run downloads the pinned MicroPython firmware into `build/firmware/`;
-after that everything is offline. The other UF2 tasks:
-
-| Task | What it does |
-| --- | --- |
-| `UF2: Build release (offline, no download)` | Same build, fails rather than fetching a base firmware |
-| `UF2: Build filesystem-only update` | Small UF2 with just `src/`, leaves the board's MicroPython alone |
-| `UF2: Download base MicroPython firmware` | Cache the pinned stock UF2 (`./tools/pico firmware`) |
-| `UF2: Inspect a .uf2` | Flash map + file listing for any UF2, including board dumps |
-| `UF2: Capture from board (sync -> BOOTSEL -> save)` | The old hardware path, below |
-
-To put an image on a board, hold BOOTSEL while plugging it in and either drag the
-UF2 onto the `RPI-RP2` volume or run:
+Needs the MicroPython submodule and either Docker or a local ARM toolchain
+— see `docs/RELEASE.md` for the full story (why this needs a real compile,
+what's frozen, the toolchain setup). Quick version:
 
 ```bash
-./tools/pico flash build/robox-2.0.1.uf2
+git submodule update --init --recursive firmware/vendor/micropython
+./tools/pico fw-doctor    # checks Docker (or a local ARM toolchain)
+./tools/pico release      # -> build/robox-<version>.uf2, verified filesystem-safe
 ```
+
+or the tasks **`UF2: Check firmware toolchain`** then
+**`UF2: Build release (the file end users update with)`**. The version comes
+from `CURRENT_FIRMWARE_VERSION` in `src/main.py`. `release` compiles via
+Docker by default; the **`UF2: Build release (local toolchain, no Docker)`**
+task (or `./tools/pico release --local`) uses `arm-none-eabi-gcc`/`cmake` off
+PATH instead.
+
+To put the result on a board, hold BOOTSEL while plugging it in and either
+drag the UF2 onto the `RPI-RP2` volume, or run `./tools/pico flash
+build/robox-<version>.uf2`, or just `./tools/pico deploy` to build and flash
+in one step (task **`UF2: Build + flash (deploy)`**).
 
 #### Capturing a UF2 off a board instead
 
-Still useful for snapshotting a board that is already configured — a dump also
-carries `program.py` and calibration data, which a clean build leaves out.
+Still useful for snapshotting a board that is already configured — a dump
+carries `program.py` and calibration data exactly as they are on that board.
 Needs picotool.
 
-**Tasks: Run Task → `UF2: Capture from board (sync -> BOOTSEL -> save)`**
+**Tasks: Run Task → `UF2: Capture from board`**, or:
 
-It runs, in order:
+```bash
+./tools/pico bootsel     # reboot into BOOTSEL, no button press needed
+./tools/pico uf2         # -> build/robox-<timestamp>.uf2
+```
 
-1. `Pico: Upload src/ to board` — put the current source on flash
-2. `UF2: Reboot board into BOOTSEL` — `mpremote bootloader`, no BOOTSEL button needed
-3. a short wait for the `RPI-RP2` volume to mount
-4. `UF2: Save board flash to build/` — `picotool save -a build/robox-<timestamp>.uf2 -t uf2`
-
-A dump can be fed back in as the base for a build
-(`ROBOX_BASE_UF2=dump.uf2 ./tools/pico build`), which keeps its firmware and
-replaces its filesystem with a freshly built one.
+A dump can be fed back in as the base for `tools/build_uf2.py build
+--base dump.uf2` directly (not `./tools/pico release`/`deploy`, which always
+compile their own firmware and never touch a littlefs image at all).
 
 ---
 
@@ -345,28 +332,23 @@ Working as intended: `pyrightconfig.json` exists, so it wins. Edit that file
 instead. This is also why running MicroPico's *Configure project* can't break
 the setup.
 
-**`picotool save` says "no accessible RP2040 devices"**
-The board isn't in BOOTSEL mode. Run `UF2: Reboot board into BOOTSEL`, or unplug
-and replug while holding the BOOTSEL button. On macOS you may need `sudo` for
-`picotool` depending on how it was installed. Building a release doesn't need
-either — use `./tools/pico build`.
+**`picotool save`/`reflash`/`deploy` say "no accessible RP-series devices"**
+The board isn't in BOOTSEL mode. `reflash`/`deploy` already poll and wait for
+it (nudging the board into BOOTSEL first if mpremote can reach it), so this
+usually means neither mpremote nor picotool can see the board at all — check
+`./tools/pico devs`, or unplug and replug while holding BOOTSEL by hand.
 
-**`./tools/pico build` says littlefs-python is missing**
-`python3 -m pip install --user -r requirements-dev.txt`. The builder needs it to
-create the filesystem image; nothing else in the repo does.
+**`./tools/pico release`/`fw-build` fails with a toolchain error**
+Run `./tools/pico fw-doctor` first — it checks Docker (or a local
+`arm-none-eabi-gcc`/`cmake`) and whether the MicroPython submodule is
+checked out. See `docs/RELEASE.md` for the known Docker/local build-cache
+collision and the Clang `-Wgnu-folding-constant` issue on some machines.
 
-**The board won't boot after flashing a build**
-Check the filesystem window the build used against the board's real one:
-`./tools/pico fs-layout` prints the numbers, and `--fs-base`/`--fs-size`
-override them. The defaults are the 2 MB Pico's, and `build` normally reads the
-window straight out of the base firmware.
-
-**Uploads feel slow**
-Most of the cost is per-connection overhead (opening the port, interrupting the
-running program, entering the raw REPL), not link speed — the Pico's USB CDC
-ignores the baud rate entirely. `./tools/pico sync` therefore chains every file
-copy into a single `mpremote` invocation so that cost is paid once. MicroPico's
-"Upload project" button spawns its own connection and is a little slower.
+**The board doesn't seem to run the code I just changed**
+If it's already running a custom-compiled firmware from a previous
+`release`/`deploy`, that's expected for anything in `src/` — those files
+are frozen in, so nothing short of a fresh `deploy` changes what runs. There
+is no loose-file upload path for this any more.
 
 ---
 
@@ -383,10 +365,9 @@ tools/pico                 mpremote/picotool wrapper backing all the tasks
 tools/build_uf2.py         host-side UF2 builder (no board needed)
 tests/test_build_uf2.py    offline tests for that builder
 requirements-dev.txt       host-side Python deps (mpremote, littlefs-python)
-build/                     UF2 output + cached base firmware (gitignored)
+firmware/                  frozen-firmware manifest, Dockerfile, MicroPython submodule
+build/                     UF2 output + cached firmware build dirs (gitignored)
 ```
-
-Nothing in `src/` was changed — the firmware is untouched.
 
 `typings/` and `build/*` are gitignored (regenerable); everything else above is
 committed, so a fresh clone needs exactly two commands:
@@ -396,15 +377,8 @@ python3 -m pip install --user -r requirements-dev.txt
 ./tools/pico stubs
 ```
 
-Note the two files whose upload rules are defined in *two* places, and keep them
-in step if you change one:
-
-| | MicroPico | `tools/pico` |
-| --- | --- | --- |
-| what gets uploaded | `micropico.syncFolder` + `syncFileTypes` | `SYNC_DIR` |
-| what gets skipped | `micropico.pyIgnore` (paths relative to `src/`) | `EXCLUDES` in `tools/pico` |
-
-(Type checking has no such split — `pyrightconfig.json` is the only place.)
-
-Both are currently set to upload all of `src/` except `.DS_Store`,
-`__pycache__`, and `lib/picozero-0.4.2.dist-info/`.
+`micropico.syncFolder`/`syncFileTypes`/`pyIgnore` are still set in
+`.vscode/settings.json` from before `src/` was frozen into the firmware.
+They're harmless (MicroPico's "Upload project to Pico" button still runs,
+it just uploads files nothing imports any more) but don't do anything
+useful for this repo now — use `./tools/pico deploy` instead.

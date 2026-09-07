@@ -79,19 +79,8 @@
       }
     },
     {
-      "label": "Pico: Upload src/ to board",
-      "detail": "Thonny's 'upload every file' step: copies src/ onto the Pico root, creating lib/ as needed.",
-      "type": "shell",
-      "command": "./tools/pico sync",
-      "problemMatcher": [],
-      "group": {
-        "kind": "build",
-        "isDefault": true
-      }
-    },
-    {
       "label": "Pico: Upload current file",
-      "detail": "Copy just the file in the active editor to the Pico root.",
+      "detail": "Copy just the file in the active editor to the Pico root. Only useful for loose data files (program.py, config.json) -- src/ itself is frozen into the firmware, not uploaded.",
       "type": "shell",
       "command": "./tools/pico push '${file}' '${fileBasename}'",
       "problemMatcher": []
@@ -110,25 +99,11 @@
       }
     },
     {
-      "label": "Pico: Mount src/ as board filesystem",
-      "detail": "Dev loop with zero flash writes: the Pico imports straight from src/ over USB. Ctrl-] to detach.",
-      "type": "shell",
-      "command": "./tools/pico mount",
-      "problemMatcher": [],
-      "presentation": {
-        "reveal": "always",
-        "focus": true,
-        "panel": "dedicated",
-        "clear": false
-      }
-    },
-    {
-      "label": "Pico: Upload src/ then open REPL",
-      "detail": "Sync, hard reset, and attach so you can watch main.py boot. The closest thing to Thonny's green Run button.",
+      "label": "UF2: Build + flash (deploy) then open REPL",
+      "detail": "Build a fresh custom firmware, flash it, and attach so you can watch main.py boot. The closest thing to Thonny's green Run button.",
       "dependsOrder": "sequence",
       "dependsOn": [
-        "Pico: Upload src/ to board",
-        "Pico: Reset board",
+        "UF2: Build + flash (deploy)",
         "Pico: Settle after reset",
         "Pico: REPL"
       ],
@@ -222,10 +197,9 @@
     // so the result carries no filesystem blocks and can't touch
     // config.json/program.py. A frozen main.py autoruns on its own
     // (confirmed on real hardware), so the same build works for a
-    // brand-new blank board too -- there's no separate factory image
-    // (`./tools/pico build`/`factory` are just aliases for `release`). The
-    // BOOTSEL/picotool tasks below stay for snapshotting a physical board
-    // and for flashing.
+    // brand-new blank board too -- there's no separate factory image or
+    // command for one. The BOOTSEL/picotool tasks below stay for
+    // snapshotting a physical board and for flashing.
     // ===================================================================
     {
       "label": "UF2: Check firmware toolchain",
@@ -246,6 +220,24 @@
       "detail": "Same as above, but compiles with arm-none-eabi-gcc/cmake straight off PATH instead of Docker.",
       "type": "shell",
       "command": "./tools/pico release --local",
+      "problemMatcher": []
+    },
+    {
+      "label": "UF2: Build + flash (deploy)",
+      "detail": "Build a fresh custom firmware and flash it onto the connected board in one step -- the everyday loop now that src/ is frozen into the firmware, not uploaded.",
+      "type": "shell",
+      "command": "./tools/pico deploy",
+      "problemMatcher": [],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "UF2: Reflash the most recent build",
+      "detail": "Bootsel + wait + flash latest.uf2 (or a chosen file) without recompiling.",
+      "type": "shell",
+      "command": "./tools/pico reflash",
       "problemMatcher": []
     },
     {
@@ -277,11 +269,10 @@
       "problemMatcher": []
     },
     {
-      "label": "UF2: Capture from board (sync -> BOOTSEL -> save)",
-      "detail": "The old hardware workflow: upload src/, reboot to BOOTSEL, dump the whole flash to build/*.uf2. Use it to snapshot a board; prefer 'UF2: Build release (the file end users update with)' for releases.",
+      "label": "UF2: Capture from board",
+      "detail": "Reboot to BOOTSEL and dump the whole flash to build/*.uf2, exactly as it is on the board right now (program.py, config.json, everything). Use it to snapshot a board; prefer 'UF2: Build release (the file end users update with)' for releases.",
       "dependsOrder": "sequence",
       "dependsOn": [
-        "Pico: Upload src/ to board",
         "UF2: Reboot board into BOOTSEL",
         "UF2: Wait for BOOTSEL volume",
         "UF2: Save board flash to build/"
