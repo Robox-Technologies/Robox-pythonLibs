@@ -58,8 +58,8 @@ MAX_LINES_PER_POLL = 128
 # How often a reading goes out while colour mode is active.
 COLOR_MODE_INTERVAL_MS = 250
 
-# Fixed speed for run_motor_0/1: a wiring/calibration check, not a program,
-# so it does not need a variable speed.
+# Fixed speed for move_forward/backward/left/right: a wiring/calibration
+# check, not a program, so it does not need a variable speed.
 TEST_MOTOR_SPEED = 70
 
 # ----------------------
@@ -210,10 +210,10 @@ def dispatch_command(comm, command):
     # Start program
     # ----------------------
     elif command == "start_program":
-        # A run_motor_0/1 test-drive left running must not fight the program
-        # for the same pins. Stopped unconditionally, before either check
-        # below, since the safety concern applies even to a start attempt
-        # that is about to be refused.
+        # A move_forward/backward/left/right test-drive left running must not
+        # fight the program for the same pins. Stopped unconditionally, before
+        # either check below, since the safety concern applies even to a
+        # start attempt that is about to be refused.
         Motors().stop_motors()
 
         if program_running:
@@ -320,19 +320,28 @@ def dispatch_command(comm, command):
         comm.write_message("calibrated", "swap")
 
     # ----------------------
-    # Motor test-drive: run one motor at a fixed speed so a client can see
-    # which physical motor spins and which way, to check wiring or a
-    # calibration change. A fresh Motors() each time rather than one kept
-    # around, so it always picks up whatever calibration is persisted right
-    # now (see Motors.__init__ in roboxlib.py) instead of a stale snapshot
-    # from whenever this module first ran. PWM keeps driving the pins after
-    # the object is dropped, so nothing needs to be kept alive here.
+    # Motor test-drive: drive both motors at a fixed speed in the named
+    # direction, so a client can see the robot move the way it says it will,
+    # to check wiring, swap or a calibration change. Left/right pivot in
+    # place (wheels opposite ways) rather than skid on one wheel, so a turn
+    # is visible even at this fixed speed. A fresh Motors() each time rather
+    # than one kept around, so it always picks up whatever calibration is
+    # persisted right now (see Motors.__init__ in roboxlib.py) instead of a
+    # stale snapshot from whenever this module first ran. PWM keeps driving
+    # the pins after the object is dropped, so nothing needs to be kept alive
+    # here.
     # ----------------------
-    elif command == "run_motor_0":
-        Motors().run_motors(TEST_MOTOR_SPEED, 0)
+    elif command == "move_forward":
+        Motors().run_motors(TEST_MOTOR_SPEED, TEST_MOTOR_SPEED)
 
-    elif command == "run_motor_1":
-        Motors().run_motors(0, TEST_MOTOR_SPEED)
+    elif command == "move_backward":
+        Motors().run_motors(-TEST_MOTOR_SPEED, -TEST_MOTOR_SPEED)
+
+    elif command == "move_left":
+        Motors().run_motors(-TEST_MOTOR_SPEED, TEST_MOTOR_SPEED)
+
+    elif command == "move_right":
+        Motors().run_motors(TEST_MOTOR_SPEED, -TEST_MOTOR_SPEED)
 
     elif command == "stop_motors":
         Motors().stop_motors()

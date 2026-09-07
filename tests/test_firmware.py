@@ -770,50 +770,74 @@ class TestMotorReversalAndSwap(unittest.TestCase):
 
 
 class TestMotorTestDrive(unittest.TestCase):
-    def test_run_motor_0_drives_only_the_left_side(self):
+    def test_move_forward_drives_both_sides_forward(self):
         ns = load_firmware()
         usb = ns["usb"]
 
-        ns["dispatch_command"](usb, "run_motor_0")
+        ns["dispatch_command"](usb, "move_forward")
 
         self.assertEqual(
-            ns["roboxlib"].motor_runs, [(ns["TEST_MOTOR_SPEED"], 0)]
+            ns["roboxlib"].motor_runs,
+            [(ns["TEST_MOTOR_SPEED"], ns["TEST_MOTOR_SPEED"])],
         )
 
-    def test_run_motor_1_drives_only_the_right_side(self):
+    def test_move_backward_drives_both_sides_backward(self):
         ns = load_firmware()
         usb = ns["usb"]
 
-        ns["dispatch_command"](usb, "run_motor_1")
+        ns["dispatch_command"](usb, "move_backward")
 
         self.assertEqual(
-            ns["roboxlib"].motor_runs, [(0, ns["TEST_MOTOR_SPEED"])]
+            ns["roboxlib"].motor_runs,
+            [(-ns["TEST_MOTOR_SPEED"], -ns["TEST_MOTOR_SPEED"])],
+        )
+
+    def test_move_left_pivots_left(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "move_left")
+
+        self.assertEqual(
+            ns["roboxlib"].motor_runs,
+            [(-ns["TEST_MOTOR_SPEED"], ns["TEST_MOTOR_SPEED"])],
+        )
+
+    def test_move_right_pivots_right(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "move_right")
+
+        self.assertEqual(
+            ns["roboxlib"].motor_runs,
+            [(ns["TEST_MOTOR_SPEED"], -ns["TEST_MOTOR_SPEED"])],
         )
 
     def test_stop_motors_stops_both(self):
         ns = load_firmware()
         usb = ns["usb"]
 
-        ns["dispatch_command"](usb, "run_motor_0")
+        ns["dispatch_command"](usb, "move_forward")
         ns["dispatch_command"](usb, "stop_motors")
 
         self.assertEqual(
             ns["roboxlib"].motor_runs,
-            [(ns["TEST_MOTOR_SPEED"], 0), (0, 0)],
+            [(ns["TEST_MOTOR_SPEED"], ns["TEST_MOTOR_SPEED"]), (0, 0)],
         )
 
     def test_starting_a_program_stops_a_test_drive_first(self):
-        """A left-running test motor must not fight the program for the pins,
-        even when the start attempt itself is about to be refused."""
+        """A moving test drive must not fight the program for the pins, even
+        when the start attempt itself is about to be refused."""
         ns = load_firmware()
         ble = ns["ble"]
 
-        ns["dispatch_command"](ble, "run_motor_0")
+        ns["dispatch_command"](ble, "move_forward")
         ns["dispatch_command"](ble, "start_program")
 
         self.assertEqual(
             ns["roboxlib"].motor_runs,
-            [(ns["TEST_MOTOR_SPEED"], 0), (0, 0)],
+            [(ns["TEST_MOTOR_SPEED"], ns["TEST_MOTOR_SPEED"]), (0, 0)],
         )
 
 
