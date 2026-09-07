@@ -1,10 +1,6 @@
-"""Host-side transports that mirror what the website actually does on the wire.
+"""Host-side transports mirroring usb.ts and webBle.ts on the wire.
 
-The point of this module is fidelity, not elegance. `UsbTransport` reproduces
-`usb.ts` (one stream write per logical message, newline-terminated) and
-`BleTransport` reproduces `webBle.ts`/`iosBle.ts` (20-byte
-write-without-response chunks paced by a fixed sleep). If those files change,
-these have to change with them or the benchmark stops meaning anything.
+Fidelity over elegance: if those files change, these have to change too.
 """
 
 import glob
@@ -94,11 +90,7 @@ class Transport:
 
 
 class UsbTransport(Transport):
-    """Web Serial equivalent: an unframed, reliable byte stream at 9600 baud.
-
-    Reproduces usb.ts, which writes each logical message as one stream write
-    with a trailing newline and does no chunking.
-    """
+    """Web Serial equivalent: an unframed, reliable byte stream at 9600 baud."""
 
     name = "usb"
     chunked = False
@@ -148,11 +140,7 @@ class UsbTransport(Transport):
 
 
 class BleTransport(Transport):
-    """HM-10 over GATT, driven exactly like the browser drives it.
-
-    bleak is asyncio-only, so this runs a private event loop and blocks. The
-    harness is a synchronous script; the extra machinery is not worth it.
-    """
+    """HM-10 over GATT, driven exactly like the browser drives it."""
 
     name = "ble"
     chunked = True
@@ -264,12 +252,7 @@ def _mpremote(*args, port=None, timeout=40):
 
 
 def reset_board(port=None, settle=1.5):
-    """Hard reset so main.py restarts with a clean upload state.
-
-    The port name has to be resolved *before* the reset: the CDC endpoint
-    disappears while the board reboots, so a glob run afterwards finds nothing
-    and would report the board as missing.
-    """
+    """Hard reset so main.py restarts with a clean upload state."""
     resolved = find_usb_port(port)
     result = _mpremote("reset", port=resolved)
     if result.returncode != 0:

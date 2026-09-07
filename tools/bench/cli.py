@@ -1,10 +1,8 @@
 """Command line driver for the communication benchmark.
 
-    python3 -m bench --transport usb  --out docs/comm-baseline-usb.json
-    python3 -m bench --transport ble  --out docs/comm-baseline-ble.json
+    python3 -m bench --transport usb --out docs/comm-baseline-usb.json
 
-The harness never sends START_PROGRAM: it only ever *uploads* and then reads
-program.py back over USB. Nothing it does can make the robot move.
+Never sends START_PROGRAM, so nothing it does can make the robot move.
 """
 
 import argparse

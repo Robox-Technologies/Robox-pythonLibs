@@ -1,29 +1,27 @@
-# Ro/Box communication: baseline, protocol, and harness
+# Ro/Box communication: the benchmark harness
 
-## Why this document exists
-
-Bluetooth uploads were corrupting programs, and the board had no way to know
-it. This records what the link actually does today (measured, not guessed),
-the protocol that replaces it, and how to re-run the measurement.
+How to measure what the link actually does, and what it currently does. The
+protocol itself is [PROTOCOL.md](PROTOCOL.md).
 
 ## The harness
 
 ```bash
-./tools/comm-bench --transport usb --out docs/comm-baseline-usb.json
-./tools/comm-bench --transport ble --out docs/comm-baseline-ble.json
+./tools/comm-bench --transport usb --out docs/comm-usb-2.0.0.json
+./tools/comm-bench --transport ble --out docs/ble-adaptive.json
 ./tools/comm-bench --corpus tiny          # fast smoke test
 ```
 
 It uploads a fixed, seeded corpus through the *same wire behaviour the website
 uses*, then reads `program.py` back over USB with `mpremote` and compares byte
 for byte. The corpora live in `tools/bench/corpus.py`; they are generated from
-a fixed seed so a "before" and an "after" run push identical traffic.
+a fixed seed so two runs push identical traffic and any difference in the
+report comes from the protocol.
 
-**Safety.** The harness never sends `START_PROGRAM`. It only uploads and reads
+**Safety.** The harness never sends `start_program`. It only uploads and reads
 back, so it cannot make the robot move. `corpus.assert_safe` runs at import
-time and refuses any corpus containing a motor API or a dangerous bare command.
+time and refuses any corpus containing a motor API.
 
-### Reading the report
+## Reading the report
 
 Three byte counts, and they are not meant to match:
 
@@ -34,211 +32,61 @@ Three byte counts, and they are not meant to match:
 | `stored` | what is actually on the board, read back over USB |
 
 `verdict` is `EXACT` when `stored == expected`. It is never compared against
-`sent`, because `sent` is not what a correct upload stores. Since blank lines
-are now preserved, the only remaining difference is the single trailing newline
-the board guarantees, so `expected` is always `sent + 1` for these corpora and
-`lost` is zero throughout.
+`sent`, because `sent` is not what a correct upload stores. Blank lines are
+preserved, so the only difference is that trailing newline: `expected` is
+always `sent + 1` for these corpora and `lost` is zero throughout.
 
-`lost` is the column that matters: bytes the protocol discards **by design,
-over a perfect link**. Under the old protocol a run could be 100% `EXACT` and
-still be losing user code, which is exactly what `command_injection` did.
+`lost` is bytes the protocol discards **by design, over a perfect link**. A run
+can be 100% `EXACT` and still be losing user code, so this is the column that
+catches a protocol that silently drops things.
 
-## Baseline (firmware 1.0.0, legacy protocol)
+Three throughput numbers, answering different questions:
 
-### USB — 2026-08-25
-
-| corpus | sent | stored | accuracy | thr B/s | ack | lost |
-|---|---|---|---|---|---|---|
-| tiny | 33 | 34 | EXACT | 793 | yes | – |
-| typical | 664 | 661 | EXACT | 6855 | yes | 3 |
-| long_lines | 829 | 830 | EXACT | 9672 | yes | – |
-| unicode_mix | 113 | 114 | EXACT | 3618 | yes | – |
-| edge_cases | 299 | 298 | EXACT | 6405 | yes | – |
-| stress | 7213 | 7214 | EXACT | 7287 | yes | – |
-| command_injection | 122 | 49 | EXACT | 5775 | yes | **73** |
-
-Integrity 7/7 exact. **USB loses nothing on the wire** — CDC is a reliable
-transport, so the byte-level corruption users see is BLE-specific.
-
-But USB still loses data at the *protocol* level:
-
-* `typical` — 3 bytes: blank lines are discarded. Harmless here, but it means
-  the stored program is never identical to the sent program, so no end-to-end
-  comparison is even possible today.
-* `command_injection` — **73 of 122 bytes silently discarded.** The corpus has
-  a bare `x03ENDUPLD` on line 4. The firmware executes it, closes the file, and
-  drops every following line. No error, no warning, and the board will happily
-  run the truncated result.
-
-### BLE
-
-Not yet measured: driving GATT from Python on this machine needs macOS
-Bluetooth permission (see "Running the BLE benchmark" below).
-
-## After: framed protocol (firmware 1.1.0)
-
-Same board, same corpus, same USB link, both protocols against the same
-firmware. See [PROTOCOL.md](PROTOCOL.md) for the design.
-
-| | legacy | framed (v2) |
-|---|---|---|
-| integrity | 8/8 exact | 8/8 exact |
-| uploads confirmed by the board | 8/8 accepted | 8/8 **CRC-verified** |
-| protocol data loss | **75 bytes over 2 cases** | 4 bytes over 1 case |
-| `command_injection` stored | 49 of 120 bytes | **all 120** |
-| `command_guard` | stored (guard works) | stored |
-| mean throughput | 8578 B/s | 5552 B/s |
-
-What changed, and what did not:
-
-* **The injection is gone.** A program whose source contains `x03ENDUPLD` is
-  stored verbatim instead of truncating the upload. That is the 71 bytes.
-* **Uploads are now verified rather than merely accepted.** Under legacy, "ack"
-  meant the board said it closed the file. Under v2 it means the board
-  recomputed a CRC over what it actually wrote and the totals matched.
-* **Throughput drops 35% on USB.** That is the cost of 12 bytes of framing per
-  line plus ACK round trips on a link that never lost anything to begin with.
-  The trade only pays where loss is real, which is BLE, where credit pacing also
-  replaces the fixed 40 ms per chunk that caps legacy at roughly 500 B/s.
-* Blank lines used to be dropped, so a stored program was never a faithful copy
-  of the source. They are preserved now, which is why protocol data loss reads
-  zero on 2.0.0.
-
-Two bugs were found by testing rather than by reading, both of which would have
-caused real frame loss on hardware:
-
-* the uploader advanced its send window *after* writing a batch, so an ACK
-  arriving mid-write left the window inconsistent and the next advance skipped
-  frames that were never sent;
-* the board's sequence expectation persisted across uploads, so a second upload
-  on the same connection restarted at sequence 0, read as stale duplicates, and
-  was silently ignored. BEGIN is now a resynchronisation point. Verified on
-  hardware with two uploads and no reset between them.
-
-## The command-injection hole
-
-Commands travel **in-band**: `main.py` compares each received line against a
-table, so a line of user code that happens to match is executed instead of
-stored.
-
-```python
-command = COMMANDS.get(line.strip())   # src/main.py
-```
-
-Anything typed in the Python editor can trigger it. Consequences by command:
-
-| bare line | effect |
+| column | meaning |
 |---|---|
-| `x01FIRMCHECK` | replies, and sleeps the *other* interface |
-| `x02BEGINUPLD` | truncates the upload in flight |
-| `x03ENDUPLD` | ends the upload; all later lines dropped |
-| `x04STARTPROG` | **runs `program.py` — drives the motors** |
-| `x05COLORCALIBRATE` | overwrites the stored colour calibration |
-| `x06RESTART` | resets the board |
-| `x07BOOTLOADER`, `x08DISCONNECT` | in the table with no handler, so they fall through and are stored as program text |
+| `goodput` | program bytes landed on the board per second of wall clock |
+| `wire` | bytes pushed per second, counting framing and every retransmission |
+| `retx` | retransmissions |
 
-Picking a more obscure sentinel does not fix this. Any in-band marker is a
-string a user can type. The fix is structural: frame the channel so control and
-data are distinguished by a **header field**, never by payload content, and
-length-prefix the payload so it is never scanned for sentinels at all.
+`goodput` is the one that matters. `wire` counts framing overhead and repeats,
+so **a lossy run scores higher on it**, which is exactly backwards.
 
 ## Running the BLE benchmark
 
 `bleak` drives the HM-10 exactly as the browser does (20-byte
-write-without-response chunks, 40 ms apart, service `0xffe0`, characteristic
-`0xffe1`). macOS gates CoreBluetooth behind TCC and **aborts** an unauthorised
-process with `SIGABRT` rather than raising a catchable error, so a missing
-permission looks like a silent crash.
+write-without-response chunks, service `0xffe0`, characteristic `0xffe1`).
+macOS gates CoreBluetooth behind TCC and **aborts** an unauthorised process
+with `SIGABRT` rather than raising a catchable error, so a missing permission
+looks like a silent crash.
 
 Grant Bluetooth to the app that runs the shell — System Settings → Privacy &
 Security → Bluetooth — then:
 
 ```bash
 python3 -m pip install --user bleak
-./tools/comm-bench --transport ble --out docs/comm-baseline-ble.json
+./tools/comm-bench --transport ble --out docs/ble-adaptive.json
 ```
 
-## BLE pacing: the delay sweep
+## Current numbers
 
-The credit window bounds what the *board* buffers, but the HM-10 between the
-two drains to it at only 9600 baud with a small buffer of its own, so writes
-still have to be paced. Sweeping `--chunk-delay-ms` on this board and this
-radio environment:
+One board, one RF environment. Firmware 2.0.x, adaptive pacing.
 
-| delay | goodput | wire overhead | retransmits | `stress` wall time |
-|---|---|---|---|---|
-| 40 ms | 249 B/s | 1.40x | 0 | 27 s |
-| 30 ms | 307 B/s | 1.46x | 2 | 22 s |
-| 25 ms | 269 B/s | 1.96x | 5 | 27 s |
-| 20 ms | 93 B/s | 7.15x | 31 | 91 s |
-
-Integrity was 8/8 at every delay, which is the protocol doing its job.
-
-**Treat the bottom row with suspicion.** This sweep was taken before the
-unbounded-retransmit bug in the harness was fixed, and that bug inflated both
-the retransmit count and the wall time whenever a peer went quiet. The 20 ms
-row is therefore not trustworthy, and the conclusion originally drawn from it,
-that there is a hard performance cliff just below 21 ms, is not supported.
-Later runs sat at 21 ms with 0 to 2 retransmits per corpus. Re-run the sweep
-before relying on it.
-
-What does survive is the arithmetic: one 20-byte chunk takes 20.83 ms to leave
-the HM-10 at 9600 baud, so pacing faster than that offers bytes faster than
-they can go. The floor is kept for that reason rather than for the measured
-collapse.
-
-**Faster is not better past the optimum.** 25 ms is slower than 30 ms despite
-writing sooner, because retransmits cost more than the saved delay. That much
-is consistent across runs.
-
-## Adaptive versus fixed pacing
-
-First attempt, measured against a fixed 30 ms on the same board:
-
-| | fixed 30 ms | adaptive v1 |
+| | USB | BLE |
 |---|---|---|
-| integrity | 8/8 | 8/8 |
-| goodput | **232 B/s** | 145 B/s |
-| wall clock | 40 s | 65 s |
-| retransmits | 10 | **5** |
-| delay range | fixed | 21-120 ms |
+| integrity | 8/8 exact | 8/8 exact |
+| protocol data loss | 0 | 0 |
+| goodput | 5552 B/s | 252 B/s |
+| wall clock (all corpora) | – | 37.2 s |
+| mean chunk delay | n/a | 24 ms |
 
-The adaptive controller was **38% worse**, despite causing *fewer*
-retransmissions. Fewer retransmits and more wall time means the delay was
-self-inflicted, not loss-driven: 110 probes against 14 backoffs, and
-`edge_cases` finished at 114 ms with a goodput of 78 against 267 for fixed.
+USB is a reliable transport and loses nothing on the wire; the framing costs it
+roughly 35% of raw throughput, which buys nothing there. The trade pays on BLE,
+where loss is real.
 
-The cause was a backoff cascade. Go-back-N resends a whole run of frames after
-a gap, so one bad patch of radio draws a NAK for each of them. The controller
-treated each NAK as its own congestion signal, compounded 1.3 six times, and
-reached the ceiling for something that warranted one step; a fixed 2 ms probe
-then needed eighty acknowledgements to climb back down, which is longer than
-most uploads. It spent its life crawling downhill.
+### Pacing convergence
 
-Both halves were fixed: one backoff per loss *episode*, rearmed by the next
-clean acknowledgement, and a proportional probe so recovery does not depend on
-how far it went.
-
-### After the fix
-
-Same board, same corpora, measured against the same fixed 30 ms:
-
-| | fixed 30 ms | adaptive v1 | adaptive v2 |
-|---|---|---|---|
-| integrity | 8/8 | 8/8 | 8/8 |
-| goodput | 232 B/s | 145 B/s | **252 B/s** |
-| wall clock | 40.3 s | 64.6 s | **37.2 s** |
-| retransmits | 10 | 5 | 10 |
-| wire overhead | 1.98x | 1.66x | 2.17x |
-| mean delay | 30 ms fixed | oscillated 21-120 | **24 ms** |
-
-**+8.4% goodput and 7.7% less wall clock than the best hand-picked constant**,
-at the same integrity and the same retransmit count.
-
-The coalescing is doing the work. Across that run the controller saw **293**
-loss signals and acted on **6** of them; v1 would have compounded its factor on
-all 293. And because the pacer belongs to the connection rather than the
-upload, it converges once and stays there:
+The pacer belongs to the connection rather than the upload, so it converges
+once and stays there across the corpus run:
 
 | corpus | mean delay |
 |---|---|
@@ -251,30 +99,19 @@ upload, it converges once and stays there:
 | command_injection | 24.0 ms |
 | command_guard | 24.0 ms |
 
-Two things worth reading off that table.
-
 `tiny` pays the full 40 ms starting delay, because four acknowledgements is not
 enough feedback to converge. Adaptive pacing helps real programs, not trivial
 ones, and the starting value is deliberately conservative: the first upload on
 an unknown link should be safe rather than fast.
 
-It settled at **24 ms**, below the 30 ms the sweep called optimal, while
-causing no more retransmissions than fixed 30 ms did. That is further evidence
-the sweep's sub-30 rows were distorted by the harness bug, and a good
-illustration of why a hand-picked constant is the wrong shape of answer: the
-number was measured on one board, on one afternoon, with a bug in the meter.
+Coalescing does most of the work. Across that run the controller saw **293**
+loss signals and acted on **6** of them — one backoff per loss episode, not per
+NAK. Against a hand-picked fixed 30 ms it gains 8.4% goodput and 7.7% wall
+clock at the same integrity and the same retransmit count.
 
 Higher wire overhead at the same retransmit count is expected, not a
 regression: a lower delay puts more frames in flight, so each go-back-N rewind
 resends more of them. More redundant bytes, less wall clock, better goodput.
-
-### What is still unmeasured
-
-All of this is one board in one RF environment. The stronger argument for
-adaptive pacing is the fleet: 30 ms was hand-picked *here*, and a different
-HM-10 at a different distance may need 45 ms, where a fixed 30 would thrash and
-the controller would simply settle higher. That benefit is real but untested,
-because there is only one board to test on.
 
 Reproduce with:
 
@@ -288,21 +125,15 @@ Reproduce with:
 
 The report prints a `pacing` line with the **mean** delay, which is the number
 that matters: the minimum and maximum cannot show where the controller spent
-its time, and that omission is what let v1's oscillation go unnoticed.
+its time.
 
-## Reading throughput
+### What is still unmeasured
 
-Three different questions, which the report used to conflate into one number:
-
-| column | meaning |
-|---|---|
-| `goodput` | program bytes landed on the board per second of wall clock |
-| `wire` | bytes pushed per second, counting framing and every retransmission |
-| `retx` | retransmissions |
-
-`goodput` is the one that matters. `wire` counts framing overhead and repeats,
-so **a lossy run scores higher on it**, which is exactly backwards: the old
-report showed only that number and made a thrashing link look fast.
+All of this is one board in one RF environment. The stronger argument for
+adaptive pacing is the fleet: 30 ms was hand-picked *here*, and a different
+HM-10 at a different distance may need 45 ms, where a fixed 30 would thrash and
+the controller would simply settle higher. That benefit is real but untested,
+because there is only one board to test on.
 
 ## Hardware notes
 

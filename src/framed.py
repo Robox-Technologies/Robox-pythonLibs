@@ -1,15 +1,4 @@
-"""Receive side of the framed protocol, one session per interface.
-
-Framed and legacy traffic share the link: a frame is one line beginning with
-SOH, and SOH cannot appear in legacy text, so main.py routes on the first byte
-and old clients keep working unchanged.
-
-Frames arrive here already split into lines by the interface, which is safe by
-construction: payloads exclude newlines, so one frame is always one line. A
-packet dropped mid-frame may leave invalid UTF-8, in which case the interface
-discards the line and the missing sequence number is what tells us, exactly as
-if the whole frame had vanished.
-"""
+"""Receive side of the framed protocol, one session per interface."""
 
 from binascii import crc32
 
@@ -41,11 +30,7 @@ class FramedSession:
     # --- outbound ----------------------------------------------------------
 
     def _send_flow(self, kind):
-        """Write a flow frame straight out, bypassing the message queue.
-
-        Flow control must not queue behind console output: an ACK stuck behind
-        a traceback stalls the sender until its timeout fires.
-        """
+        """Write a flow frame straight out, bypassing the message queue."""
         expected, credit = self.receiver.take_ack()
         payload = "%02x,%04x" % (expected, credit)
         self.comm.write_raw(
@@ -59,13 +44,7 @@ class FramedSession:
     # --- inbound -----------------------------------------------------------
 
     def feed(self, line):
-        """Process one framed line. Returns command names to dispatch.
-
-        Acknowledgements are not sent here: `flush` does that once the caller
-        has drained everything that arrived together, which is what makes a
-        batch a batch. Acking per line would cost a round trip per frame, and
-        acking only at ACK_EVERY would strand an upload shorter than a batch.
-        """
+        """Process one framed line. Returns command names to dispatch."""
         frames, damage = self.reader.feed((line + "\n").encode())
         self.receiver.note_corruption(damage)
 

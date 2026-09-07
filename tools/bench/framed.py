@@ -1,9 +1,5 @@
-"""Host side of the framed upload, for the benchmark.
-
-Mirrors what the website's uploader does, so a number measured here means
-something for the real client. Sends frames back to back within the credit,
-reads ACK/NAK to advance or rewind, and refuses to call an upload good until
-the board reports a matching line count and CRC.
+"""Host side of the framed upload, for the benchmark. Mirrors the website's
+uploader.
 """
 
 import json
@@ -32,9 +28,7 @@ VERDICT_TIMEOUT_S = 6.0
 def upload(transport, code, chunk_size=None, chunk_delay=0.0, pacer=None):
     """Send `code` as frames and return what happened.
 
-    `chunk_size` splits each write to imitate a BLE MTU; None sends whole
-    frames, which is what a reliable stream does. Pass a `pacer` to have the
-    delay tuned from observed loss, or a fixed `chunk_delay` to pin it.
+    `chunk_size` splits each write to imitate a BLE MTU; None sends whole frames.
     """
     frames = p.encode_program(code)
     window = p.CreditWindow(frames, credit=p.INITIAL_CREDIT)

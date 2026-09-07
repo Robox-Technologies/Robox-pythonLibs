@@ -181,12 +181,7 @@ CALIBRATION_GETTERS = {
 
 
 def dispatch_command(comm, command):
-    """Act on a control command.
-
-    Commands only arrive inside a COMMAND frame, so nothing here can be
-    triggered by program text. That is the whole reason the bare-line protocol
-    is gone.
-    """
+    """Act on a control command. Only ever reached from a COMMAND frame."""
     global current_communication_method, program_running
     global color_mode_comm, last_color_send
 
@@ -389,13 +384,9 @@ def dispatch_command(comm, command):
 
 
 def handle_line(comm, line):
-    """Act on one received line.
-
-    Only frames are accepted, but taken from wherever the sentinel is rather
-    than only from the front: the module's unterminated chatter arrives glued to
-    the next frame, and the first frame of a session is the firmware check. SOH
-    cannot appear in a payload, so finding it is unambiguous.
-    """
+    """Act on one received line."""
+    # From wherever the sentinel is, not only the front: the module's
+    # unterminated chatter arrives glued to the next frame.
     start = line.find(FRAME_PREFIX)
     if start < 0:
         return

@@ -1,9 +1,4 @@
-"""Generate the cross-language conformance vectors.
-
-The firmware and the website each implement this protocol, in different
-languages. These vectors are how we find out when they stop agreeing, before a
-board does. Python is the source of truth; the TypeScript tests assert against
-the same file.
+"""Generate the cross-language conformance vectors for the TypeScript tests.
 
     python3 tools/gen_vectors.py
 """

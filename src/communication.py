@@ -74,19 +74,7 @@ draining_thread = _thread.get_ident()
 
 
 def queue_outgoing_message(comm, message_type, content):
-    """Queue one device message, waiting for room if the link is behind.
-
-    Waiting is what keeps output whole. A program printing in a tight loop
-    fills the queue in milliseconds while the link needs seconds to carry it,
-    and discarding the overflow silently lost more than a third of a hundred
-    printed lines. The user program has its own core, and the main loop keeps
-    draining while it sleeps, so the cost of waiting is that a chatty program
-    runs at the speed of its own output.
-
-    Bounded, and only ever on the program's thread. A link that has gone away
-    never drains, so past QUEUE_WAIT_MS the oldest entry is dropped as before
-    and recorded for a marker rather than vanishing.
-    """
+    """Queue one device message, waiting for room if the link is behind."""
     global dropped_message_count
 
     if _thread.get_ident() != draining_thread:
@@ -118,13 +106,7 @@ def _queue_is_full():
 
 
 def flush_outgoing_messages():
-    """Send at most one queued message, if an interface is ready for it.
-
-    The lock is held only long enough to take an entry off the queue. The old
-    version released it mid-iteration then used `queue_lock.locked()` to decide
-    whether to release again, but that reports the lock's state, not this
-    thread's ownership, so it could release a lock belonging to the other core.
-    """
+    """Send at most one queued message, if an interface is ready for it."""
     pending = None
 
     queue_lock.acquire()
@@ -192,11 +174,7 @@ class CommunicationInterface:
         raise NotImplementedError
 
     def read_lines(self, limit=128):
-        """Drain up to `limit` complete lines.
-
-        The loop used to take one line per interface per iteration, so a burst
-        arriving faster than it spun sat in the UART buffer until overflow.
-        """
+        """Drain up to `limit` complete lines."""
         lines = []
         for _ in range(limit):
             line = self.read_line()
@@ -206,11 +184,7 @@ class CommunicationInterface:
         return lines
 
     def write_message(self, message_type, content):
-        """
-        Public API used everywhere else.
-        Thread-safe. Never blocks the main loop; a user program that prints
-        faster than the link carries waits for room instead of losing output.
-        """
+        """Thread-safe. Never blocks the main loop."""
         queue_outgoing_message(self, message_type, content)
 
     def next_out_seq(self):
@@ -220,11 +194,7 @@ class CommunicationInterface:
         return seq
 
     def encode_reply(self, message_type, content):
-        """Frames carrying one device message.
-
-        Long messages (a traceback, a chatty print) exceed one payload, so they
-        are split across CONTINUE frames and terminated by a REPLY frame.
-        """
+        """Frames carrying one device message, split across CONTINUE frames."""
         body = generate_message(message_type, content)
         return [
             p.encode_frame(self.next_out_seq(), kind, payload)
@@ -235,11 +205,7 @@ class CommunicationInterface:
         raise NotImplementedError
 
     def write_raw(self, data):
-        """Send bytes immediately, bypassing the outgoing queue.
-
-        Only for flow control: an ACK queued behind a traceback stalls the
-        sender until its timeout fires.
-        """
+        """Send bytes now, bypassing the queue. Flow control only."""
         raise NotImplementedError
 
 
@@ -380,15 +346,9 @@ class BluetoothCommunuication(CommunicationInterface):
         self.uart.write((data + "\r\n").encode())
 
     def configure(self, name):
-        """Provision the module, once per board: `ble.configure("Robox20")`.
-
-        Set forms only. This clone has no query form, and `AT+NAME?` sets the
-        name to "?" rather than reporting it, which is how a board lost its own.
-
-        Returns False and names whatever the module rejected, since a refused
-        command otherwise looks exactly like one that applied. `AT+NOTI1` was
-        here for a long time and was always one of those.
-        """
+        """Provision the module, once per board: `ble.configure("Robox20")`."""
+        # Set forms only: this clone has no query form, and `AT+NAME?` sets the
+        # name to "?" rather than reporting it.
         rejected = []
         for cmd in ("AT+UUID0xffe0", "AT+CHAR0xffe1", "AT+NAME" + name):
             if "ERROR" in self.send_at(cmd):
@@ -403,10 +363,7 @@ class BluetoothCommunuication(CommunicationInterface):
         return not rejected
 
     def send_at(self, cmd, wait=0.3):
-        """Send one AT command and return the reply.
-
-        Blocking, which is fine: this only runs during provisioning.
-        """
+        """Send one AT command and return the reply. Blocks; provisioning only."""
         full = cmd + "\r\n"
 
         print(">>> {}".format(cmd))

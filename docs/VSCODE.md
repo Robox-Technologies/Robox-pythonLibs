@@ -38,11 +38,9 @@ code --install-extension paulober.pico-w-go
 code --install-extension ms-python.python
 ```
 
-> **On the "pico-w" in that ID:** the extension used to be called Pico-W-Go and
-> still ships under that marketplace ID, and still names its stub folder
-> `Pico-W-Stub`. It is not Pico W specific and works fine with a plain Pico.
-> This repo doesn't use its stub folder at all (see step 3), so the misleading
-> name doesn't appear anywhere in the config.
+> **On the "pico-w" in that ID:** MicroPico ships under the old Pico-W-Go
+> marketplace ID. It is not Pico W specific and works fine with a plain Pico.
+> This repo doesn't use its stub folder at all (see step 3).
 
 `.vscode/extensions.json` also marks **Pymakr** as unwanted. Don't run both —
 they fight over the serial port.
@@ -187,8 +185,8 @@ for poking at those directly.
 
 ### Testing a robot program
 
-`src/main.py` expects the user program at `/program.py` and runs it when it
-receives the `x04STARTPROG` command. To iterate on a program without the
+`src/main.py` expects the user program at `/program.py` and runs it on a
+`start_program` command frame. To iterate on a program without the
 Bluetooth/USB command dance, run it directly:
 
 ```bash
@@ -261,11 +259,10 @@ Three things it sets up that matter:
   Pico's *root*, so `import roboxlib` has to resolve as a top-level module on
   the host too. `src/lib` mirrors the board's `/lib`.
 - **`ignore: ["src/lib"]`** — picozero is a vendored dependency. Still
-  importable, but its type errors aren't reported as ours. That alone accounted
-  for about 60 of the errors.
+  importable, but its type errors aren't reported as ours.
 
-The `reportOptional*` family is switched off, which needs justifying: MicroPython
-drivers routinely use one method for both read and write —
+The `reportOptional*` family is switched off. MicroPython drivers routinely
+use one method for both read and write —
 
 ```python
 def _register8(self, register, value=None):
@@ -290,10 +287,9 @@ Rules that catch real mistakes — `reportAttributeAccessIssue`,
 **"no device found" / "could not open port"**
 Only one program can hold the serial port. Close Thonny. Close the MicroPico
 vREPL terminal (trash-can icon, not just hide) before running a `tools/pico`
-task, and vice versa. This is the cause of roughly every problem here — which
-is why `"micropico.openOnStart"` is set to `false` in
-`.vscode/settings.json`, so the extension doesn't silently claim the port every
-time you open the window. Flip it to `true` if you work mostly in the vREPL.
+task, and vice versa. This is the cause of roughly every problem here, which is
+why `"micropico.openOnStart"` is `false` in `.vscode/settings.json`. Flip it to
+`true` if you work mostly in the vREPL.
 
 **MicroPico connects but the REPL shows nothing / garbage**
 `src/main.py` runs an infinite loop at boot that reads from `sys.stdin`, so it
