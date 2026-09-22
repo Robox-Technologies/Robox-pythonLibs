@@ -3,18 +3,7 @@ import _thread
 import machine
 import time
 
-# MicroPython's default sys.path is ['', '.frozen', '/lib']: the filesystem
-# root comes *before* the frozen-module search path, so a loose file here
-# shadows a frozen module of the same name for every `import` this firmware
-# does -- including the roboxlib/communication/etc. imports right below.
-# main.py itself doesn't need this fix (its own boot-time lookup checks
-# frozen modules directly, before ever consulting the filesystem), but
-# nothing it imports gets that treatment. Moving '' to the end, once, before
-# any of those imports, is what makes "the frozen release always wins" true
-# rather than aspirational. Confirmed on real hardware: without this, a
-# board with a loose roboxlib.py left over from before this firmware existed
-# keeps running that old file forever, no matter how many frozen releases
-# it's flashed with.
+# Keep frozen modules ahead of loose files left on the board.
 if "" in sys.path:
     sys.path.remove("")
     sys.path.append("")
@@ -22,10 +11,13 @@ if "" in sys.path:
 from roboxlib import (
     ColorSensor,
     Motors,
+    DEFAULT_BLE_NAME,
     color_calibration_status,
+    load_ble_configured,
     load_motor_calibration,
     load_motor_reverse,
     load_motor_swap,
+    save_ble_configured,
     save_motor_calibration,
     save_motor_reverse,
     save_motor_swap,
@@ -42,48 +34,30 @@ from protocol import (
     parse_motor_calibration,
 )
 
-# 2.0.0 is frame-only. There is no unframed path any more, so a client still
-# speaking the old bare-line protocol gets no response and must update. 2.0.1
-# survives link noise in front of a frame; same wire protocol, so the client's
-# 2.0.0 minimum is unchanged.
 CURRENT_FIRMWARE_VERSION = "2.0.1"
 PROTOCOL_VERSION = 2
 
 PROGRAM_FILENAME = "program.py"
 
-# Backstop so a flood cannot starve the outgoing queue. A full 4KB buffer is
-# around a hundred lines anyway.
 MAX_LINES_PER_POLL = 128
 
 # How often a reading goes out while colour mode is active.
 COLOR_MODE_INTERVAL_MS = 250
 
-# Fixed speed for move_forward/backward/left/right: a wiring/calibration
-# check, not a program, so it does not need a variable speed.
 TEST_MOTOR_SPEED = 70
 
-# ----------------------
-# Hardware setup
-# ----------------------
 LED = machine.Pin(25, machine.Pin.OUT)
 LED.on()
 
-# None, not False: False narrowed the success branch to Literal[True] and made
-# pyright flag .calibrate_white() as unknown.
 colorSensor = None
 try:
     colorSensor = ColorSensor()
 except Exception:
     colorSensor = None
 
-# Shared, not rebuilt per command: recreating it re-claimed the PWM pins
-# each time, glitching whatever the previous instance was still driving.
 motors = Motors()
 
 
-# ----------------------
-# Communication setup
-# ----------------------
 ble = BluetoothCommunuication()
 usb = USBCommunication()
 
@@ -98,19 +72,21 @@ if ble.available():
     ble.write_message("connect", "")
 
 
-# ----------------------
-# User program runner
-# ----------------------
-# One spare core, so a second concurrent run raises. Tracked so a double tap
-# on Run reports something useful.
+def ensure_ble_configured():
+    """Configure BLE once after a fresh module or config reset."""
+    if not ble.available() or load_ble_configured():
+        return False
+    if ble.configure(DEFAULT_BLE_NAME):
+        save_ble_configured(True)
+        return True
+    return False
+
+
 program_running = False
 
-# The interface currently subscribed to periodic colour readings, or None.
-# Not a mode a client can get stuck in: any other command clears it.
 color_mode_comm = None
 last_color_send = 0
 
-# Framed sessions, created on the first frame from an interface.
 framed_sessions = {}
 
 
@@ -155,9 +131,6 @@ def run_user_program(comm):
         program_running = False
 
 
-# ----------------------
-# Command handling
-# ----------------------
 def _motor_calibration():
     """Everything Motors.run_motors applies, in one reply: bias, each
     side's reversal, and whether left/right are swapped."""
@@ -175,9 +148,6 @@ def _color_calibration():
     return color_calibration_status(colorSensor)
 
 
-# One entry per calibration a client can read back with
-# `get_calibration_<name>`. Add to this and to COMMAND_NAMES in protocol.py
-# together when a new calibration needs to be queryable.
 CALIBRATION_GETTERS = {
     "motors": _motor_calibration,
     "colors": _color_calibration,
@@ -189,43 +159,23 @@ def dispatch_command(comm, command):
     global current_communication_method, program_running
     global color_mode_comm, last_color_send
 
-    # Colour mode is a side channel, not a state machine of its own: anything
-    # else the client sends means it has moved on, so it is cleared here
-    # rather than left for the client to remember to turn off.
     if command != "color_mode":
         color_mode_comm = None
 
-    # ----------------------
-    # Firmware check
-    # ----------------------
     if command == "firmware_check":
-        # Handed over rather than refused, and nothing is slept. The board
-        # never learns that a Bluetooth central went away, so a claim only
-        # clears explicitly: refusing the next client stranded the board until
-        # a power cycle, and a slept interface could only be woken over the
-        # other one. A firmware check is a fresh client announcing itself.
         current_communication_method = comm
         comm.write_message(
             "firmware",
             "%s+proto%d" % (CURRENT_FIRMWARE_VERSION, PROTOCOL_VERSION),
         )
 
-    # ----------------------
-    # Start program
-    # ----------------------
     elif command == "start_program":
-        # A move_forward/backward/left/right test-drive left running must not
-        # fight the program for the same pins. Stopped unconditionally, before
-        # either check below, since the safety concern applies even to a
-        # start attempt that is about to be refused.
         motors.stop_motors()
 
         if program_running:
             comm.write_message("error", "A program is already running")
             return
 
-        # The point of the whole exercise: refuse to run a program the board
-        # cannot confirm it received intact.
         if not upload_is_verified(comm):
             comm.write_message(
                 "error", "Upload did not verify, refusing to run it"
@@ -244,21 +194,6 @@ def dispatch_command(comm, command):
 
         comm.write_message("download", "")
 
-    # ----------------------
-    # Colour calibration: one command per preselected colour, each with its
-    # own reset, used by colour mode to name a reading against swatches
-    # actually seen by this sensor rather than an idealised RGB guess. Each
-    # colour calibrates and resets independently; the whitelist in
-    # protocol.py is what limits `command` to a real colour name here.
-    #
-    # White and black are not stored like the others: they are the
-    # sensor's own brightness extremes, so calibrating (or resetting) them
-    # instead acts on the white/black points the rest of readColor() scales
-    # against (a white point alone cannot correct the sensor's dark offset,
-    # which is why both matter). A point captured after that will already
-    # land near (255,255,255) or (0,0,0) for a genuine white/black swatch,
-    # so no separate entry is needed for either.
-    # ----------------------
     elif command.startswith("calibrate_color_"):
         name = command[len("calibrate_color_"):]
         if not colorSensor:
@@ -287,11 +222,6 @@ def dispatch_command(comm, command):
             colorSensor.reset_palette(name)
             comm.write_message("calibrated", name + "_reset")
 
-    # ----------------------
-    # Motor calibration: a left/right trim bias, applied by every Motors
-    # instance a user program creates (see Motors.run_motors in roboxlib.py),
-    # plus the `motors` singleton above, which is never recreated to reread it.
-    # ----------------------
     elif command.startswith(CALIBRATE_MOTORS_PREFIX):
         bias = parse_motor_calibration(command)
         assert bias is not None  # already validated by is_command_name
@@ -299,16 +229,6 @@ def dispatch_command(comm, command):
         motors.calibration = bias
         comm.write_message("calibrated", "motors")
 
-    # ----------------------
-    # Motor reversal: sets one logical side's spin direction, for a motor
-    # wired backwards. Independent of swap_motors below: swap decides which
-    # physical motor serves which side, this corrects that side's polarity
-    # once it has been decided. `reverse_motor_<index>_<value>`, 0 is left
-    # and 1 is right, matching CALIBRATION_GETTERS' "reverse_0"/"reverse_1"
-    # read back below. Absolute set rather than a toggle: a command frame
-    # is not deduplicated the way a data frame is (see FramedSession._apply
-    # in framed.py), so a resent frame must be a no-op, not a second flip.
-    # ----------------------
     elif command.startswith("reverse_motor_"):
         index_str, value_str = command[len("reverse_motor_"):].split("_")
         index = int(index_str)
@@ -317,21 +237,12 @@ def dispatch_command(comm, command):
         motors.reverse[index] = value
         comm.write_message("calibrated", "reverse_%d" % index)
 
-    # ----------------------
-    # Motor swap: the motor wired to the left side answers to right_speed
-    # and vice versa, for a robot with its motors crossed. `swap_motors_0`
-    # or `swap_motors_1`, same absolute-set reasoning as reversal above.
-    # ----------------------
     elif command.startswith("swap_motors_"):
         value = command[len("swap_motors_"):] == "1"
         save_motor_swap(value)
         motors.swap = value
         comm.write_message("calibrated", "swap")
 
-    # ----------------------
-    # Motor test-drive: fixed speed, named direction, to check wiring/swap/
-    # calibration. Left/right pivot in place rather than skid on one wheel.
-    # ----------------------
     elif command == "move_forward":
         motors.run_motors(TEST_MOTOR_SPEED, TEST_MOTOR_SPEED)
 
@@ -347,47 +258,27 @@ def dispatch_command(comm, command):
     elif command == "stop_motors":
         motors.stop_motors()
 
-    # ----------------------
-    # Calibration readback: one command, one reply shape, for every
-    # calibration listed in CALIBRATION_GETTERS above. `name` is always a
-    # known key here, since the frame layer already refused anything not
-    # literally in COMMAND_NAMES.
-    # ----------------------
     elif command.startswith(GET_CALIBRATION_PREFIX):
         name = command[len(GET_CALIBRATION_PREFIX):]
         comm.write_message(
             "calibration", {"name": name, "value": CALIBRATION_GETTERS[name]()}
         )
 
-    # ----------------------
-    # Colour mode: periodic readings until something else is sent
-    # ----------------------
     elif command == "color_mode":
         if not colorSensor:
             comm.write_message("error", "Color sensor not connected")
         else:
             color_mode_comm = comm
-            # Due immediately rather than after one interval, so switching the
-            # mode on feels instant.
             last_color_send = time.ticks_add(
                 time.ticks_ms(), -COLOR_MODE_INTERVAL_MS
             )
 
-    # ----------------------
-    # Reset device
-    # ----------------------
     elif command == "reset_device":
         machine.reset()
 
-    # ----------------------
-    # Bootloader
-    # ----------------------
     elif command == "boot_loader":
         machine.bootloader()
 
-    # ----------------------
-    # Disconnect
-    # ----------------------
     elif command == "disconnect_device":
         if comm == current_communication_method:
             current_communication_method = None
@@ -395,8 +286,6 @@ def dispatch_command(comm, command):
 
 def handle_line(comm, line):
     """Act on one received line."""
-    # From wherever the sentinel is, not only the front: the module's
-    # unterminated chatter arrives glued to the next frame.
     start = line.find(FRAME_PREFIX)
     if start < 0:
         return
@@ -407,14 +296,10 @@ def handle_line(comm, line):
 
 def poll(comm):
     """Read and act on everything one interface has buffered."""
-    # Drain everything buffered. One line per iteration meant a fast burst sat
-    # in the UART buffer until it overflowed, losing bytes mid-line.
     lines = comm.read_lines(MAX_LINES_PER_POLL)
     for line in lines:
         handle_line(comm, line)
 
-    # Acknowledge once per drain rather than per frame: whatever arrived
-    # together is one batch, which is where the round-trip saving comes from.
     if lines:
         session = framed_sessions.get(comm)
         if session is not None:
@@ -445,14 +330,11 @@ def send_color_if_due():
     )
 
 
-# ----------------------
-# Main loop
-# ----------------------
+ensure_ble_configured()
+
 while True:
     flush_outgoing_messages()
 
-    # Every interface is read every pass. Skipping one was how the board ended
-    # up unreachable over Bluetooth after a USB session.
     for comm in communications:
         poll(comm)
 

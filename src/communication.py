@@ -8,68 +8,27 @@ import _thread
 import protocol as p
 
 
-# ========================
-# Tuning
-# ========================
-
-# The most important number here. The rp2 default of 64 bytes is about 66ms of
-# runway at 9600 baud, and the loop does blocking work between reads while a
-# user program competes for the GIL. Overflow is silent: bytes vanish mid-line.
 UART_RX_BUFFER = 4096
-
-# 9600 baud, 8N1, so ten bits on the wire per byte.
 UART_BYTES_PER_SECOND = 960
-
-# Headroom over the line rate, leaving the module's own buffer somewhere to go.
 SEND_HEADROOM = 1.4
-
-# Smallest gap between BLE sends. The old flat 300ms capped console output at
-# roughly three messages a second regardless of size.
 MIN_SEND_INTERVAL_MS = 15
-
-# Unbounded growth on a 264KB device is a crash, so the queue is bounded and a
-# program that outruns the link waits for room rather than having its output
-# thrown away. See queue_outgoing_message.
 MAX_QUEUED_MESSAGES = 64
-
-# How long a printing program waits for room before giving up and dropping.
-# The link is the real limit, not the queue: a full queue is a couple of
-# seconds of BLE, so this is comfortably longer than a drain while still
-# bounded, because a link that has gone away never drains at all.
 QUEUE_WAIT_MS = 2000
-
-# Poll interval while waiting. Short enough to be invisible, long enough to
-# leave the draining core the GIL.
 QUEUE_POLL_MS = 2
-
-# Shown in the terminal where output was lost, so a gap is never silent.
 DROP_NOTICE = "[%d line(s) of output dropped: the link could not keep up]"
-
-# Cap on a partial line waiting for its newline. The module's own chatter has
-# no terminator, so without this it accumulates for the life of the session.
 MAX_LINE_LENGTH = 4 * (p.FRAME_OVERHEAD + p.MAX_PAYLOAD)
-
-# As bytes, for searching a raw receive buffer.
 SOH_BYTE = bytes([p.SOH])
+REBOOT_POLL_INTERVAL = 0.5
+REBOOT_POLL_ATTEMPTS = 12
 
 
-# ========================
-# Global outgoing queue
-# ========================
 outgoing_messages = []
 queue_lock = _thread.allocate_lock()
 
-# Dropped to keep the queue bounded, counted so the loss is reportable.
 dropped_message_count = 0
 
-# Drops not yet announced on the interface they happened on, so the gap can be
-# marked in the terminal at the point where it happened.
 unreported_drops = {}
 
-# The thread that runs flush_outgoing_messages, recorded at import because that
-# happens on the main loop's thread. Waiting for the queue to drain is only
-# safe for a thread that is not the one doing the draining: the main loop
-# waiting on itself is a deadlock until the timeout fires.
 draining_thread = _thread.get_ident()
 
 
@@ -111,27 +70,14 @@ def flush_outgoing_messages():
 
     queue_lock.acquire()
     try:
-        # An interface that is not ready blocks its own backlog, and is asked
-        # once per flush rather than once per entry. `can_send_now` compares
-        # against the clock, so asking per entry let the clock cross
-        # `next_send_time` part-way down the queue: the oldest entry was judged
-        # not ready, a later entry for the *same* interface was, and it went
-        # out in front. That is how console output arrived shuffled.
         blocked = []
         for index in range(len(outgoing_messages)):
             comm = outgoing_messages[index][0]
             if comm in blocked:
                 continue
-            # BLE paces itself; skip while draining and try the next entry,
-            # which may belong to a *different*, ready interface.
             if hasattr(comm, "can_send_now") and not comm.can_send_now():
                 blocked.append(comm)
                 continue
-            # Everything dropped for this interface was older than everything
-            # still queued for it, so the gap belongs here, in front of the
-            # survivors. Sent in place of a real message rather than as well as
-            # one, so a flush is still one write and the marker costs no queue
-            # space of its own.
             missing = unreported_drops.get(comm)
             if missing:
                 unreported_drops[comm] = 0
@@ -146,8 +92,6 @@ def flush_outgoing_messages():
         return False
 
     comm, message_type, content = pending
-    # Outside the lock: writing can block on the UART, and the user program's
-    # thread must still be able to queue meanwhile.
     comm._write_message_now(message_type, content)
     return True
 
@@ -160,9 +104,6 @@ def queued_message_count():
         queue_lock.release()
 
 
-# ========================
-# Base interface
-# ========================
 class CommunicationInterface:
     def __init__(self):
         pass
@@ -209,15 +150,11 @@ class CommunicationInterface:
         raise NotImplementedError
 
 
-# ========================
-# USB
-# ========================
 class USBCommunication(CommunicationInterface):
     def __init__(self):
         self.name = "USB"
         self.out_seq = 0
 
-        # Tracked so a corrupt link is measurable, not just suspected.
         self.decode_errors = 0
 
         self.poller = select.poll()
@@ -233,9 +170,6 @@ class USBCommunication(CommunicationInterface):
         try:
             line = sys.stdin.readline()
         except Exception:
-            # One undecodable byte used to raise straight out of the main loop
-            # and drop the board to a REPL. The frame it belonged to is lost,
-            # and the missing sequence number is what reports that.
             self.decode_errors += 1
             return None
 
@@ -246,17 +180,11 @@ class USBCommunication(CommunicationInterface):
             self.write_raw(frame)
 
     def write_raw(self, data):
-        # stdout.buffer, not stdout: the text stream translates a lone newline
-        # into CRLF, which inserts a byte inside the frame and breaks its
-        # length. Frames have to go out exactly as encoded.
         if isinstance(data, str):
             data = data.encode()
         sys.stdout.buffer.write(data)
 
 
-# ========================
-# Bluetooth
-# ========================
 class BluetoothCommunuication(CommunicationInterface):
     def __init__(self, uart_port=0, baudrate=9600):
         self.name = "Bluetooth"
@@ -274,10 +202,7 @@ class BluetoothCommunuication(CommunicationInterface):
             self.ok = True
             self.out_seq = 0
 
-            # Rate limiting
             self.next_send_time = 0
-
-            # Tracked so a corrupt link is measurable, not just suspected.
             self.decode_errors = 0
 
         except Exception:
@@ -287,7 +212,6 @@ class BluetoothCommunuication(CommunicationInterface):
         return self.ok
 
     def read_line(self):
-        # Empty the hardware buffer first, even if the caller wants one line.
         if self.uart.any():
             data = self.uart.read()
             if data:
@@ -295,8 +219,6 @@ class BluetoothCommunuication(CommunicationInterface):
                     data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
                 )
 
-        # Keep everything from the newest sentinel, where a frame can still
-        # start.
         if len(self.buffer) > MAX_LINE_LENGTH:
             start = self.buffer.rfind(SOH_BYTE)
             self.buffer = self.buffer[start:] if start > 0 else b""
@@ -304,8 +226,6 @@ class BluetoothCommunuication(CommunicationInterface):
         while b"\n" in self.buffer:
             line, self.buffer = self.buffer.split(b"\n", 1)
 
-            # As bytes, before decoding: chatter in front of a frame need not
-            # be valid UTF-8, and decoding first lost the frame with it.
             start = line.find(SOH_BYTE)
             if start > 0:
                 line = line[start:]
@@ -330,8 +250,6 @@ class BluetoothCommunuication(CommunicationInterface):
             self.uart.write(frame)
             total += len(frame)
 
-        # Pace by bytes sent, not a flat delay: the old 300ms throttled a
-        # 20-byte status message as hard as a 400-byte traceback.
         transmit_ms = int(
             total * 1000 * SEND_HEADROOM / UART_BYTES_PER_SECOND
         )
@@ -346,16 +264,26 @@ class BluetoothCommunuication(CommunicationInterface):
         self.uart.write((data + "\r\n").encode())
 
     def configure(self, name):
-        """Provision the module, once per board: `ble.configure("Robox20")`."""
-        # Set forms only: this clone has no query form, and `AT+NAME?` sets the
-        # name to "?" rather than reporting it.
+        """Provision the module with the fixed UUIDs and default name."""
+        return self._provision(("AT+UUIDFFE0", "AT+CHARFFE1", "AT+NAME" + name))
+
+    def _provision(self, commands):
+        """Apply AT commands, reset the module, and wait for it to return."""
+        self.send_at("AT", wait=0.5)
+
         rejected = []
-        for cmd in ("AT+UUID0xffe0", "AT+CHAR0xffe1", "AT+NAME" + name):
+        for cmd in commands:
             if "ERROR" in self.send_at(cmd):
                 rejected.append(cmd)
 
         self.send_at("AT+RESET", wait=1.5)
-        if "OK" not in self.send_at("AT"):
+
+        came_back = False
+        for _ in range(REBOOT_POLL_ATTEMPTS):
+            if "OK" in self.send_at("AT", wait=REBOOT_POLL_INTERVAL):
+                came_back = True
+                break
+        if not came_back:
             rejected.append("AT (module did not come back)")
 
         if rejected:

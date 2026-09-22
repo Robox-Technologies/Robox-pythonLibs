@@ -115,6 +115,18 @@ def load_firmware(color_sensor_cls=RaisingColorSensor):
     roboxlib.load_motor_swap = load_motor_swap
     roboxlib.save_motor_swap = save_motor_swap
 
+    roboxlib.DEFAULT_BLE_NAME = "Robox"
+    roboxlib.ble_configured_state = [False]
+
+    def load_ble_configured():
+        return roboxlib.ble_configured_state[0]
+
+    def save_ble_configured(value):
+        roboxlib.ble_configured_state[0] = bool(value)
+
+    roboxlib.load_ble_configured = load_ble_configured
+    roboxlib.save_ble_configured = save_ble_configured
+
     roboxlib.motor_runs = []
 
     class FakeMotors:
@@ -362,7 +374,7 @@ class TestProvisioning(unittest.TestCase):
 
         # This module answers ERROR to plenty of commands, and a refusal is
         # otherwise indistinguishable from a setting that took.
-        refuse = {"AT+CHAR0xffe1"}
+        refuse = {"AT+CHARFFE1"}
 
         def answer(data):
             ble.uart.written.append(data)
@@ -375,8 +387,9 @@ class TestProvisioning(unittest.TestCase):
         self.assertEqual(
             [w.decode().strip() for w in ble.uart.written],
             [
-                "AT+UUID0xffe0",
-                "AT+CHAR0xffe1",
+                "AT",
+                "AT+UUIDFFE0",
+                "AT+CHARFFE1",
                 "AT+NAMERobox20",
                 "AT+RESET",
                 "AT",
@@ -395,6 +408,63 @@ class TestProvisioning(unittest.TestCase):
         ble.uart.write = answer
 
         self.assertTrue(ble.configure("Robox20"))
+
+
+class TestSelfConfiguring(unittest.TestCase):
+    """Gated on config.json's "already configured" flag (stubbed here via
+    roboxlib.ble_configured_state), not run unconditionally: confirmed on
+    real hardware that configure()'s AT+UUID/AT+CHAR are destructive, not
+    just redundant, on a module that already holds those values -- see
+    BluetoothCommunuication.configure's docstring. A swapped-in replacement
+    module going undetected (this clone has no AT query form) is the
+    accepted cost of that."""
+
+    def test_configures_once_when_never_configured(self):
+        ns = load_firmware()
+        ble, comms, roboxlib = ns["ble"], ns["communication"], ns["roboxlib"]
+        comms.time.sleep = lambda _seconds: None
+
+        def answer(data):
+            ble.uart.written.append(data)
+            ble.uart.feed(b"OK\r\n")
+
+        ble.uart.write = answer
+
+        self.assertTrue(ns["ensure_ble_configured"]())
+        self.assertTrue(roboxlib.ble_configured_state[0])
+        self.assertEqual(
+            [w.decode().strip() for w in ble.uart.written],
+            [
+                "AT",
+                "AT+UUIDFFE0",
+                "AT+CHARFFE1",
+                "AT+NAME" + roboxlib.DEFAULT_BLE_NAME,
+                "AT+RESET",
+                "AT",
+            ],
+        )
+
+    def test_skips_when_already_configured(self):
+        ns = load_firmware()
+        ble, roboxlib = ns["ble"], ns["roboxlib"]
+        roboxlib.ble_configured_state[0] = True
+
+        self.assertFalse(ns["ensure_ble_configured"]())
+        self.assertEqual(ble.uart.written, [])
+
+    def test_leaves_the_flag_unset_when_the_module_refuses(self):
+        ns = load_firmware()
+        ble, comms, roboxlib = ns["ble"], ns["communication"], ns["roboxlib"]
+        comms.time.sleep = lambda _seconds: None
+
+        def answer(data):
+            ble.uart.written.append(data)
+            ble.uart.feed(b"ERROR\r\n")
+
+        ble.uart.write = answer
+
+        self.assertFalse(ns["ensure_ble_configured"]())
+        self.assertFalse(roboxlib.ble_configured_state[0])
 
 
 class TestCommandGating(unittest.TestCase):
