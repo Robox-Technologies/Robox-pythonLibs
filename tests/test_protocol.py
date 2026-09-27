@@ -178,6 +178,43 @@ class TestMotorCalibrationCommand(unittest.TestCase):
         self.assertFalse(p.is_command_name("not_a_command"))
 
 
+class TestRenameDeviceCommand(unittest.TestCase):
+    """rename_device_<name> is parameterised like calibrate_motors_<x>, but
+    its value is sent verbatim into an AT+NAME<name> command against the
+    AT09, so the charset has to be restricted to what cannot be mistaken for
+    another AT command or its \\r\\n terminator."""
+
+    def test_parses_a_valid_name(self):
+        self.assertEqual(p.parse_device_name("rename_device_MyRobot"), "MyRobot")
+        self.assertEqual(p.parse_device_name("rename_device_r2-d2"), "r2-d2")
+        self.assertEqual(p.parse_device_name("rename_device_a_b"), "a_b")
+
+    def test_rejects_empty_and_oversized_names(self):
+        self.assertIsNone(p.parse_device_name("rename_device_"))
+        self.assertIsNone(
+            p.parse_device_name("rename_device_" + "a" * (p.DEVICE_NAME_MAX_LENGTH + 1))
+        )
+        self.assertEqual(
+            p.parse_device_name("rename_device_" + "a" * p.DEVICE_NAME_MAX_LENGTH),
+            "a" * p.DEVICE_NAME_MAX_LENGTH,
+        )
+
+    def test_rejects_characters_that_could_break_out_of_the_at_command(self):
+        self.assertIsNone(p.parse_device_name("rename_device_bad name"))
+        self.assertIsNone(p.parse_device_name("rename_device_bad\rname"))
+        self.assertIsNone(p.parse_device_name("rename_device_bad;AT+RESET"))
+        self.assertIsNone(p.parse_device_name("rename_device_bad\"name"))
+
+    def test_unrelated_names_are_rejected(self):
+        self.assertIsNone(p.parse_device_name("firmware_check"))
+        self.assertIsNone(p.parse_device_name("calibrate_motors_0"))
+
+    def test_is_command_name_accepts_valid_rename_commands(self):
+        self.assertTrue(p.is_command_name("rename_device_MyRobot"))
+        self.assertFalse(p.is_command_name("rename_device_"))
+        self.assertFalse(p.is_command_name("rename_device_bad name"))
+
+
 class TestFrameReader(unittest.TestCase):
     def setUp(self):
         self.reader = p.FrameReader()

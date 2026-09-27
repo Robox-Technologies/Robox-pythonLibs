@@ -87,11 +87,32 @@ def parse_motor_calibration(name):
     return value
 
 
+RENAME_DEVICE_PREFIX = "rename_device_"
+
+DEVICE_NAME_MAX_LENGTH = 16
+_DEVICE_NAME_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+)
+
+
+def parse_device_name(name):
+    """Return the device name from a valid rename command, else None."""
+    if not name.startswith(RENAME_DEVICE_PREFIX):
+        return None
+    value = name[len(RENAME_DEVICE_PREFIX):]
+    if not value or len(value) > DEVICE_NAME_MAX_LENGTH:
+        return None
+    if any(ch not in _DEVICE_NAME_CHARS for ch in value):
+        return None
+    return value
+
+
 def is_command_name(name):
     """Return whether a command payload is supported."""
     return (
         name in COMMAND_NAMES
         or parse_motor_calibration(name) is not None
+        or parse_device_name(name) is not None
     )
 
 

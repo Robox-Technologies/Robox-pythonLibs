@@ -14,10 +14,12 @@ from roboxlib import (
     DEFAULT_BLE_NAME,
     color_calibration_status,
     load_ble_configured,
+    load_ble_name,
     load_motor_calibration,
     load_motor_reverse,
     load_motor_swap,
     save_ble_configured,
+    save_ble_name,
     save_motor_calibration,
     save_motor_reverse,
     save_motor_swap,
@@ -31,6 +33,8 @@ from framed import FRAME_PREFIX, FramedSession
 from protocol import (
     CALIBRATE_MOTORS_PREFIX,
     GET_CALIBRATION_PREFIX,
+    RENAME_DEVICE_PREFIX,
+    parse_device_name,
     parse_motor_calibration,
 )
 
@@ -73,10 +77,10 @@ if ble.available():
 
 
 def ensure_ble_configured():
-    """Configure BLE once after a fresh module or config reset."""
+    """Provision a fresh module once, using its persisted name."""
     if not ble.available() or load_ble_configured():
         return False
-    if ble.configure(DEFAULT_BLE_NAME):
+    if ble.configure(load_ble_name()):
         save_ble_configured(True)
         return True
     return False
@@ -272,6 +276,16 @@ def dispatch_command(comm, command):
             last_color_send = time.ticks_add(
                 time.ticks_ms(), -COLOR_MODE_INTERVAL_MS
             )
+
+    elif command.startswith(RENAME_DEVICE_PREFIX):
+        new_name = parse_device_name(command)
+        assert new_name is not None  # already validated by is_command_name
+        comm._write_message_now("renaming", new_name)
+        if ble.rename(new_name):
+            save_ble_name(new_name)
+            comm.write_message("renamed", new_name)
+        else:
+            comm.write_message("error", "Could not rename device")
 
     elif command == "reset_device":
         machine.reset()

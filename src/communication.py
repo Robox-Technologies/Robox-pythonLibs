@@ -21,6 +21,9 @@ SOH_BYTE = bytes([p.SOH])
 REBOOT_POLL_INTERVAL = 0.5
 REBOOT_POLL_ATTEMPTS = 12
 
+REBOOT_POLL_INTERVAL = 0.5
+REBOOT_POLL_ATTEMPTS = 12
+
 
 outgoing_messages = []
 queue_lock = _thread.allocate_lock()
@@ -264,8 +267,12 @@ class BluetoothCommunuication(CommunicationInterface):
         self.uart.write((data + "\r\n").encode())
 
     def configure(self, name):
-        """Provision the module with the fixed UUIDs and default name."""
+        """Provision the module with its UUID, characteristic, and name."""
         return self._provision(("AT+UUIDFFE0", "AT+CHARFFE1", "AT+NAME" + name))
+
+    def rename(self, name):
+        """Change the module name without changing its UUID or characteristic."""
+        return self._provision(("AT+NAME" + name,))
 
     def _provision(self, commands):
         """Apply AT commands, reset the module, and wait for it to return."""

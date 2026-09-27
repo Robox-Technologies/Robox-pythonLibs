@@ -116,7 +116,14 @@ def load_firmware(color_sensor_cls=RaisingColorSensor):
     roboxlib.save_motor_swap = save_motor_swap
 
     roboxlib.DEFAULT_BLE_NAME = "Robox"
+    roboxlib.ble_name_state = [roboxlib.DEFAULT_BLE_NAME]
     roboxlib.ble_configured_state = [False]
+
+    def load_ble_name():
+        return roboxlib.ble_name_state[0]
+
+    def save_ble_name(name):
+        roboxlib.ble_name_state[0] = name
 
     def load_ble_configured():
         return roboxlib.ble_configured_state[0]
@@ -124,6 +131,8 @@ def load_firmware(color_sensor_cls=RaisingColorSensor):
     def save_ble_configured(value):
         roboxlib.ble_configured_state[0] = bool(value)
 
+    roboxlib.load_ble_name = load_ble_name
+    roboxlib.save_ble_name = save_ble_name
     roboxlib.load_ble_configured = load_ble_configured
     roboxlib.save_ble_configured = save_ble_configured
 
@@ -410,6 +419,43 @@ class TestProvisioning(unittest.TestCase):
         self.assertTrue(ble.configure("Robox20"))
 
 
+class TestRenameMethod(unittest.TestCase):
+    """BluetoothCommunuication.rename() -- the lightweight path used after
+    the one-time configure(), which never re-sends AT+UUID/AT+CHAR. See
+    configure()'s docstring: doing so on a module that already holds those
+    values is destructive on real hardware, not just redundant."""
+
+    def test_rename_only_touches_name_and_reset(self):
+        ns = load_firmware()
+        ble, comms = ns["ble"], ns["communication"]
+        comms.time.sleep = lambda _seconds: None
+
+        def answer(data):
+            ble.uart.written.append(data)
+            ble.uart.feed(b"OK\r\n")
+
+        ble.uart.write = answer
+
+        self.assertTrue(ble.rename("Ella"))
+        self.assertEqual(
+            [w.decode().strip() for w in ble.uart.written],
+            ["AT", "AT+NAMEElla", "AT+RESET", "AT"],
+        )
+
+    def test_rename_reports_what_the_module_refused(self):
+        ns = load_firmware()
+        ble, comms = ns["ble"], ns["communication"]
+        comms.time.sleep = lambda _seconds: None
+
+        def answer(data):
+            ble.uart.written.append(data)
+            ble.uart.feed(b"ERROR\r\n")
+
+        ble.uart.write = answer
+
+        self.assertFalse(ble.rename("Ella"))
+
+
 class TestSelfConfiguring(unittest.TestCase):
     """Gated on config.json's "already configured" flag (stubbed here via
     roboxlib.ble_configured_state), not run unconditionally: confirmed on
@@ -465,6 +511,62 @@ class TestSelfConfiguring(unittest.TestCase):
 
         self.assertFalse(ns["ensure_ble_configured"]())
         self.assertFalse(roboxlib.ble_configured_state[0])
+
+
+class TestRenameDevice(unittest.TestCase):
+    def test_rename_reprovisions_the_module_and_persists_the_name(self):
+        ns = load_firmware()
+        ble, comms, roboxlib = ns["ble"], ns["communication"], ns["roboxlib"]
+        comms.time.sleep = lambda _seconds: None
+
+        drain(ns)
+
+        def answer(data):
+            ble.uart.written.append(data)
+            ble.uart.feed(b"OK\r\n")
+
+        ble.uart.write = answer
+
+        ns["dispatch_command"](ble, "rename_device_MyRobot")
+        drain(ns)
+
+        self.assertEqual(roboxlib.ble_name_state[0], "MyRobot")
+        self.assertEqual(
+            [
+                w.decode().strip()
+                for w in ble.uart.written
+                if not w.startswith(bytes([p.SOH]))
+            ],
+            ["AT", "AT+NAMEMyRobot", "AT+RESET", "AT"],
+        )
+        self.assertEqual(
+            [r["type"] for r in replies(ble)],
+            ["connect", "renaming", "renamed"],
+        )
+        self.assertEqual(
+            [r["message"] for r in replies(ble) if r["type"] == "renamed"],
+            ["MyRobot"],
+        )
+
+    def test_rename_reports_an_error_when_the_module_refuses(self):
+        ns = load_firmware()
+        ble, comms, roboxlib = ns["ble"], ns["communication"], ns["roboxlib"]
+        comms.time.sleep = lambda _seconds: None
+        drain(ns)
+
+        def answer(data):
+            ble.uart.written.append(data)
+            ble.uart.feed(b"ERROR\r\n")
+
+        ble.uart.write = answer
+
+        ns["dispatch_command"](ble, "rename_device_MyRobot")
+        drain(ns)
+
+        self.assertEqual(roboxlib.ble_name_state[0], roboxlib.DEFAULT_BLE_NAME)
+        self.assertEqual(
+            [r["type"] for r in replies(ble)], ["connect", "renaming", "error"]
+        )
 
 
 class TestCommandGating(unittest.TestCase):

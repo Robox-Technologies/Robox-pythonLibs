@@ -100,20 +100,29 @@ def save_motor_swap(value):
     _write_config({_MOTOR_SWAP_KEY: bool(value)})
 
 
+_BLE_NAME_KEY = "bleName"
 _BLE_CONFIGURED_KEY = "bleConfigured"
 
-#: The name used when a freshly-flashed AT09 is self-configured.
 DEFAULT_BLE_NAME = "Robox"
 
 
+def load_ble_name():
+    """The name the AT09 was last told to use, or the factory default."""
+    value = _read_config().get(_BLE_NAME_KEY)
+    return value if isinstance(value, str) and value else DEFAULT_BLE_NAME
+
+
 def load_ble_configured():
-    """Whether the AT09 has received its one-time configuration."""
+    """Return whether the module has received one-time configuration."""
     return bool(_read_config().get(_BLE_CONFIGURED_KEY, False))
 
 
 def save_ble_configured(value):
     _write_config({_BLE_CONFIGURED_KEY: bool(value)})
 
+
+def save_ble_name(name):
+    _write_config({_BLE_NAME_KEY: name})
 
 _MIN_S = 1300
 _MAX_S = 8500
