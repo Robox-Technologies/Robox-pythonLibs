@@ -38,6 +38,7 @@ CURRENT_FIRMWARE_VERSION = "2.0.1"
 PROTOCOL_VERSION = 2
 
 PROGRAM_FILENAME = "program.py"
+VERIFIED_PROGRAM_FILENAME = PROGRAM_FILENAME + ".verified"
 
 MAX_LINES_PER_POLL = 128
 
@@ -99,9 +100,23 @@ def framed_session(comm):
 
 
 def upload_is_verified(comm):
-    """True when this interface's last upload passed its checks."""
+    """True when the stored program is verified for this or another link.
+
+    The uploaded program is shared on the board, but Bluetooth reconnects can
+    create a new communication object. A run-only command on that new link
+    may reuse the last verified upload; a session that started a new upload
+    must still pass its own verification.
+    """
     session = framed_sessions.get(comm)
-    return session is not None and session.verified
+    if session is not None and session.upload_started:
+        return session.verified
+    if any(item.verified for item in framed_sessions.values()):
+        return True
+    try:
+        with open(VERIFIED_PROGRAM_FILENAME) as marker:
+            return bool(marker.readline().strip())
+    except Exception:
+        return False
 
 
 def run_user_program(comm):

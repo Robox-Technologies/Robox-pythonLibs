@@ -13,6 +13,7 @@ class FramedSession:
     def __init__(self, comm, filename):
         self.comm = comm
         self.filename = filename
+        self.verified_filename = filename + ".verified"
 
         self.reader = p.FrameReader()
         self.receiver = p.SequencedReceiver()
@@ -23,6 +24,7 @@ class FramedSession:
         self.running_crc = 0
         self.expected_lines = 0
         self.expected_crc = 0
+        self.upload_started = False
 
         #: True only after an END frame whose totals matched. Gates running.
         self.verified = False
@@ -104,6 +106,12 @@ class FramedSession:
 
     def _begin(self, frame):
         self.close()
+        self.upload_started = True
+        try:
+            import os
+            os.remove(self.verified_filename)
+        except Exception:
+            pass
         try:
             self.expected_lines, self.expected_crc = p.parse_begin(frame.payload)
         except Exception:
@@ -157,6 +165,13 @@ class FramedSession:
         lines_ok = self.stored_lines == self.expected_lines
         crc_ok = declared is not None and self.running_crc == declared
         self.verified = lines_ok and crc_ok
+
+        if self.verified:
+            try:
+                with open(self.verified_filename, "w") as marker:
+                    marker.write("%08x\n" % self.running_crc)
+            except Exception:
+                self.verified = False
 
         # A dict, not a pre-built JSON string: write_message runs json.dumps
         # over it, so a string would arrive at the client escaped inside
