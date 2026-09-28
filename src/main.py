@@ -34,7 +34,7 @@ from protocol import (
     parse_motor_calibration,
 )
 
-CURRENT_FIRMWARE_VERSION = "2.0.1"
+CURRENT_FIRMWARE_VERSION = "2.1.0"
 PROTOCOL_VERSION = 2
 
 PROGRAM_FILENAME = "program.py"
