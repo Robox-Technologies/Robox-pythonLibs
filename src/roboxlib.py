@@ -242,7 +242,7 @@ class UltrasonicSensor:
 
         return self.convert_us_to_cm(echo_time/2) # Halve time to remove return trip time
 class Servo:
-    def __init__(self, pin=20):
+    def __init__(self, pin=6):
         self.servo = PWM(Pin(pin))
         self.servo.freq(50)
     def angle_to_pulse(self, angle):
