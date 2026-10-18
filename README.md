@@ -40,6 +40,7 @@ firmware/manifest.py   what's frozen into the custom-built firmware
 firmware/Dockerfile    pinned ARM cross-compile toolchain
 firmware/vendor/       git submodule: MicroPython + pico-sdk (+ all its own submodules)
 tools/pico             mpremote/picotool wrapper (CLI + backs the VS Code tasks)
+tools/scan_ble.py      scan for an exact advertised BLE name after renaming
 tools/build_uf2.py     assembles a UF2 on the host, no board required
 pyrightconfig.json     IntelliSense / type-checking config
 docs/VSCODE.md         editor setup and workflows

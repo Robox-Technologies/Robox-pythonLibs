@@ -18,7 +18,7 @@ Two layers are set up, deliberately overlapping:
 ### 1. Install the host tooling
 
 ```bash
-python3 -m pip install --user -r requirements-dev.txt   # mpremote + littlefs-python
+python3 -m pip install --user -r requirements-dev.txt   # mpremote + bleak + littlefs-python
 brew install picotool                                    # only for dumping/flashing a board
 ```
 
@@ -360,7 +360,7 @@ typings/                   MicroPython stubs (gitignored; ./tools/pico stubs)
 tools/pico                 mpremote/picotool wrapper backing all the tasks
 tools/build_uf2.py         host-side UF2 builder (no board needed)
 tests/test_build_uf2.py    offline tests for that builder
-requirements-dev.txt       host-side Python deps (mpremote, littlefs-python)
+requirements-dev.txt       host-side Python deps (mpremote, bleak, littlefs-python)
 firmware/                  frozen-firmware manifest, Dockerfile, MicroPython submodule
 build/                     UF2 output + cached firmware build dirs (gitignored)
 ```

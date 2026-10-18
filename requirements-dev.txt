@@ -7,6 +7,9 @@
 # .vscode/tasks.json via tools/pico.
 mpremote>=1.24.0
 
+# BLE discovery and transport support for host-side tools.
+bleak>=0.22.0
+
 # littlefs image builder. Not needed for `./tools/pico release`/`build`/
 # `factory` (those ship the compiled firmware as-is, no filesystem image
 # involved) -- only for using tools/build_uf2.py directly with a captured
