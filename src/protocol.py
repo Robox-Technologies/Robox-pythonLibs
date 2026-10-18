@@ -88,6 +88,7 @@ def parse_motor_calibration(name):
 
 
 RENAME_DEVICE_PREFIX = "rename_device_"
+VERIFY_PROGRAM_PREFIX = "verify_program_"
 
 DEVICE_NAME_MAX_LENGTH = 16
 _DEVICE_NAME_CHARS = frozenset(
@@ -107,12 +108,26 @@ def parse_device_name(name):
     return value
 
 
+def parse_program_checksum(name):
+    """Return the expected CRC-32 from a program verification command."""
+    if not name.startswith(VERIFY_PROGRAM_PREFIX):
+        return None
+    value = name[len(VERIFY_PROGRAM_PREFIX):]
+    if len(value) != 8:
+        return None
+    try:
+        return int(value, 16)
+    except ValueError:
+        return None
+
+
 def is_command_name(name):
     """Return whether a command payload is supported."""
     return (
         name in COMMAND_NAMES
         or parse_motor_calibration(name) is not None
         or parse_device_name(name) is not None
+        or parse_program_checksum(name) is not None
     )
 
 

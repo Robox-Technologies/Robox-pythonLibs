@@ -15,6 +15,13 @@ import protocol as p  # noqa: E402
 
 
 class TestChecksums(unittest.TestCase):
+    def test_program_verification_command_requires_eight_hex_digits(self):
+        command = "verify_program_%08x" % 0x1234ABCD
+        self.assertEqual(p.parse_program_checksum(command), 0x1234ABCD)
+        self.assertTrue(p.is_command_name(command))
+        self.assertIsNone(p.parse_program_checksum("verify_program_1234"))
+        self.assertFalse(p.is_command_name("verify_program_not-a-crc"))
+
     def test_frame_checksum_covers_header(self):
         """A corrupted seq or kind must change the checksum."""
         base = p.frame_checksum(0, p.KIND_DATA, b"hello")

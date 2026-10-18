@@ -7,6 +7,7 @@ loop. Run with: ./tools/run-tests
 import json
 import os
 import sys
+import tempfile
 import threading
 import time
 import types
@@ -580,6 +581,46 @@ class TestCommandGating(unittest.TestCase):
         self.assertEqual(
             [r["message"] for r in replies(ble) if r["type"] == "error"],
             ["Upload did not verify, refusing to run it"],
+        )
+
+    def test_existing_program_can_be_verified_after_restart(self):
+        ns = load_firmware()
+        ble = ns["ble"]
+        program = b"print('persisted')\n"
+        expected_crc = p.program_checksum(program.decode())
+
+        with tempfile.NamedTemporaryFile() as stored:
+            stored.write(program)
+            stored.flush()
+            ns["framed_sessions"][ble] = ns["FramedSession"](ble, stored.name)
+
+            ns["dispatch_command"](
+                ble, "verify_program_%08x" % expected_crc
+            )
+            drain(ns)
+
+        self.assertTrue(ns["framed_sessions"][ble].verified)
+        self.assertEqual(
+            [r["message"] for r in replies(ble) if r["type"] == "verified"],
+            [{"ok": True}],
+        )
+
+    def test_existing_program_with_different_checksum_stays_unverified(self):
+        ns = load_firmware()
+        ble = ns["ble"]
+
+        with tempfile.NamedTemporaryFile() as stored:
+            stored.write(b"print('persisted')\n")
+            stored.flush()
+            ns["framed_sessions"][ble] = ns["FramedSession"](ble, stored.name)
+
+            ns["dispatch_command"](ble, "verify_program_00000000")
+            drain(ns)
+
+        self.assertFalse(ns["framed_sessions"][ble].verified)
+        self.assertEqual(
+            [r["message"] for r in replies(ble) if r["type"] == "verified"],
+            [{"ok": False}],
         )
 
     def test_program_text_spelling_a_command_is_not_executed(self):

@@ -24,7 +24,8 @@ class FramedSession:
         self.expected_lines = 0
         self.expected_crc = 0
 
-        #: True only after an END frame whose totals matched. Gates running.
+        #: True only after an END frame or an existing-file verification
+        #: request whose checksum matched.
         self.verified = False
 
     # --- outbound ----------------------------------------------------------
@@ -171,6 +172,27 @@ class FramedSession:
                 "want": "%08x" % (declared or 0),
             },
         )
+
+    def verify_existing_program(self, expected_crc):
+        """Verify the existing program without modifying it."""
+        if self.out_file:
+            self.verified = False
+            return False
+
+        try:
+            with open(self.filename, "rb") as program:
+                actual_crc = 0
+                while True:
+                    chunk = program.read(256)
+                    if not chunk:
+                        break
+                    actual_crc = crc32(chunk, actual_crc) & 0xFFFFFFFF
+        except Exception:
+            self.verified = False
+            return False
+
+        self.verified = actual_crc == expected_crc
+        return self.verified
 
     def close(self):
         if self.out_file:

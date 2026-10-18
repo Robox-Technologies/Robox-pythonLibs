@@ -34,8 +34,10 @@ from protocol import (
     CALIBRATE_MOTORS_PREFIX,
     GET_CALIBRATION_PREFIX,
     RENAME_DEVICE_PREFIX,
+    VERIFY_PROGRAM_PREFIX,
     parse_device_name,
     parse_motor_calibration,
+    parse_program_checksum,
 )
 
 CURRENT_FIRMWARE_VERSION = "2.1.0"
@@ -197,6 +199,12 @@ def dispatch_command(comm, command):
             return
 
         comm.write_message("download", "")
+
+    elif command.startswith(VERIFY_PROGRAM_PREFIX):
+        expected_crc = parse_program_checksum(command)
+        assert expected_crc is not None  # already validated by is_command_name
+        verified = framed_session(comm).verify_existing_program(expected_crc)
+        comm.write_message("verified", {"ok": verified})
 
     elif command.startswith("calibrate_color_"):
         name = command[len("calibrate_color_"):]

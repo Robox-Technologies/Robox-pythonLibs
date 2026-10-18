@@ -165,6 +165,13 @@ never received intact:
 5. The board independently refuses `start_program` after an upload that did not
    verify, so a client that ignores the verdict still cannot run garbage.
 
+After a Pico restart, the client can avoid re-uploading unchanged code by
+sending `verify_program_<crc32>` with the CRC-32 of its normalised program.
+The board reads the existing `program.py` without changing it and replies with
+`verified: {"ok": true}` only when the file has the requested checksum. A
+successful check restores the in-memory run permission for that connection;
+otherwise the client should upload normally.
+
 Both ends run the same `normalise_program`, which collapses line endings to
 `\n` and guarantees exactly one trailing newline. Nothing else changes: blank
 lines and trailing whitespace are preserved, so the stored program is a
