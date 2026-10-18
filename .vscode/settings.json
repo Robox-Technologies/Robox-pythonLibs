@@ -92,10 +92,12 @@
   // Keep the generated stub folder out of search results and file watching.
   "search.exclude": {
     "typings": true,
-    "build": true
+    "build": true,
+    "firmware": true
+
   },
   "files.watcherExclude": {
-    "**/typings/**": true
+    "**/typings/**": true,
   },
 
   // The tasks below all assume a terminal rooted at the repo.
