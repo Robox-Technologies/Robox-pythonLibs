@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+#
+# Unified command line for the Robox board, firmware, and development tools.
+#
+# The implementation remains in the existing focused tools during migration.
+# This file is the stable user-facing command and keeps the workflow names
+# grouped by responsibility.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+PICO="$REPO_ROOT/tools/pico"
+
+usage() {
+  cat <<'EOF'
+Usage: tools/robox <group> <command> [options]
+
+Board:
+  board ports                         list connected serial ports
+  board repl                          open the MicroPython REPL
+  board stop                          interrupt the running program
+  board reset                         reset the board
+  board upload FILE [DEST]            upload a file
+  board download REMOTE [DEST]       download a file
+  board files [PATH]                  list files on the board
+  board cat REMOTE                    print a file from the board
+  board run FILE                      run a local file
+  board wipe                          remove user files
+  board soft-reset                    restart the interpreter
+  board command COMMAND               send a firmware command
+  board rename NAME                   rename the board
+  board scan [options]                scan for a BLE advertisement
+
+Firmware:
+  firmware doctor                     check the firmware toolchain
+  firmware build [options]            build custom firmware
+  firmware release [FILE]             build a distributable UF2
+  firmware deploy [FILE]              build and flash a UF2
+  firmware flash FILE                 flash an existing UF2
+  firmware reflash [FILE]             reboot to BOOTSEL and flash
+  firmware inspect FILE               inspect a UF2
+  firmware bootsel                    reboot into BOOTSEL mode
+
+Development:
+  dev doctor                          check host development tools
+  dev stubs                           install MicroPython stubs
+  dev vectors                         generate protocol vectors
+  dev benchmark [options]             run the communication benchmark
+
+Testing:
+  test [options]                      run the offline test suite
+
+Set PICO_PORT to select a board, or DRY_RUN=1 to print board commands.
+EOF
+}
+
+die() {
+  printf 'error: %s\n' "$1" >&2
+  exit 2
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+board() {
+  local command="${1:-help}"
+  shift || true
+
+  case "$command" in
+    ports)     exec "$PICO" devs "$@" ;;
+    repl)      exec "$PICO" repl "$@" ;;
+    stop)      exec "$PICO" stop "$@" ;;
+    reset)     exec "$PICO" reset "$@" ;;
+    upload)    exec "$PICO" push "$@" ;;
+    download)  exec "$PICO" pull "$@" ;;
+    files)     exec "$PICO" tree "$@" ;;
+    cat)       exec "$PICO" cat "$@" ;;
+    run)       exec "$PICO" run "$@" ;;
+    wipe)      exec "$PICO" wipe "$@" ;;
+    soft-reset) exec "$PICO" soft-reset "$@" ;;
+    command)
+      [[ $# -gt 0 ]] || die "board command requires a command name"
+      exec python3 "$REPO_ROOT/tools/send_command.py" "$@"
+      ;;
+    rename)
+      exec python3 "$REPO_ROOT/tools/rename_robox.py" "$@"
+      ;;
+    scan)
+      exec python3 "$REPO_ROOT/tools/scan_ble.py" "$@"
+      ;;
+    help|-h|--help) usage ;;
+    *) die "unknown board command '$command' (try: tools/robox help)" ;;
+  esac
+}
+
+firmware() {
+  local command="${1:-help}"
+  shift || true
+
+  case "$command" in
+    doctor|check) exec "$PICO" fw-doctor "$@" ;;
+    build)        exec "$PICO" fw-build "$@" ;;
+    release)      exec "$PICO" release "$@" ;;
+    deploy)       exec "$PICO" deploy "$@" ;;
+    flash)        exec "$PICO" flash "$@" ;;
+    reflash)      exec "$PICO" reflash "$@" ;;
+    inspect)      exec "$PICO" inspect "$@" ;;
+    bootsel)      exec "$PICO" bootsel "$@" ;;
+    fs-layout)    exec "$PICO" fs-layout "$@" ;;
+    save)         exec "$PICO" uf2 "$@" ;;
+    help|-h|--help) usage ;;
+    *) die "unknown firmware command '$command' (try: tools/robox help)" ;;
+  esac
+}
+
+development() {
+  local command="${1:-help}"
+  shift || true
+
+  case "$command" in
+    doctor)     exec "$PICO" doctor "$@" ;;
+    stubs)      exec "$PICO" stubs "$@" ;;
+    vectors)    exec python3 "$REPO_ROOT/tools/gen_vectors.py" "$@" ;;
+    benchmark)
+      export PYTHONPATH="$REPO_ROOT/tools${PYTHONPATH:+:$PYTHONPATH}"
+      exec python3 -m bench "$@"
+      ;;
+    help|-h|--help) usage ;;
+    *) die "unknown dev command '$command' (try: tools/robox help)" ;;
+  esac
+}
+
+main() {
+  local group="${1:-help}"
+  shift || true
+
+  case "$group" in
+    board)    board "$@" ;;
+    firmware) firmware "$@" ;;
+    dev)      development "$@" ;;
+    test)
+      exec "$REPO_ROOT/tools/run-tests" "$@"
+      ;;
+    help|-h|--help) usage ;;
+    *) die "unknown command group '$group' (try: tools/robox help)" ;;
+  esac
+}
+
+main "$@"

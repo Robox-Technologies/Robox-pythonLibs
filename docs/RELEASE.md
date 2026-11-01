@@ -51,7 +51,7 @@ An earlier version of this migration added a "self-heal" mechanism (a loose
 on the theory that a frozen `main.py` would *not* autorun and something else
 was needed to force it. That theory was wrong (see point 1), and the
 mechanism was actively harmful: on any firmware *without* frozen modules --
-which describes every board during normal development via `./tools/pico
+which describes every board during normal development via `./tools/robox
 sync` -- it would detect the real `main.py` as "not yet migrated" and
 overwrite it with a stub pointing at a frozen module that doesn't exist,
 bricking the board. It has been removed. There is no `src/selfheal.py` and
@@ -63,10 +63,10 @@ nothing to preserve logic for, the bytes are simply never touched.
 
 ## The one build output
 
-**`./tools/pico release [out.uf2]`** is the only artifact needed, for both a
+**`./tools/robox firmware release [out.uf2]`** is the only artifact needed, for both a
 brand-new/blank board and an already-set-up one:
 
-- Compiles custom firmware (`./tools/pico fw-build`) and ships it as-is:
+- Compiles custom firmware (`./tools/robox firmware build`) and ships it as-is:
   firmware only, verified by `tools/build_uf2.py verify-release` to carry
   zero filesystem blocks.
 - On a blank board, MicroPython's own `_boot.py` formats the unmounted
@@ -83,16 +83,16 @@ the only build this project ships. (An earlier version of this doc kept
 they were just extra names for the exact same function, with no distinct
 factory-image code path behind them.)
 
-`./tools/pico uf2` is unchanged: dumps a real board's flash (needs
+`./tools/robox firmware save` is unchanged: dumps a real board's flash (needs
 `picotool` + BOOTSEL). Still the way to snapshot a board that's already set
 up, including whatever `program.py`/`config.json` it has.
 
 ## Getting a build onto a board
 
-- **`./tools/pico deploy [out.uf2]`** -- `release`, then flash it onto
+- **`./tools/robox firmware deploy [out.uf2]`** -- `release`, then flash it onto
   whatever's connected, in one command. The everyday path: change something
   in `src/`, run this, test on the board.
-- **`./tools/pico reflash [file.uf2]`** -- just the flashing half: nudges a
+- **`./tools/robox firmware reflash [file.uf2]`** -- just the flashing half: nudges a
   connected board into BOOTSEL, polls for the RPI-RP2 volume to actually
   appear (not a guessed `sleep`), then loads. Defaults to `latest.uf2` at
   the repo root if no file is given -- deliberately *not* "most recently
@@ -100,7 +100,7 @@ up, including whatever `program.py`/`config.json` it has.
   one-off test build during development and flashed it onto a real board,
   wiping `config.json`/`program.py`. `build/` is a scratch directory; recency
   there means nothing.
-- **`./tools/pico flash <file.uf2>`**/**`bootsel`** still exist separately
+- **`./tools/robox firmware flash <file.uf2>`**/**`bootsel`** still exist separately
   for anyone who wants the steps apart (e.g. holding BOOTSEL by hand).
 
 ## Build toolchain
@@ -121,8 +121,8 @@ needs the top-level ones initialized too, not just pico-sdk's.
 
 ```
 git submodule update --init --recursive firmware/vendor/micropython
-./tools/pico fw-doctor    # checks Docker (or a local ARM toolchain)
-./tools/pico release      # -> build/robox-<version>.uf2
+./tools/robox firmware doctor
+./tools/robox firmware release      # -> build/robox-<version>.uf2
 ```
 
 Docker (`firmware/Dockerfile`) is the default build path so a release
@@ -142,11 +142,11 @@ per toolchain) is still open.
 On this dev machine specifically, `mpy-cross` also needed
 `CFLAGS_EXTRA="-Wno-error=gnu-folding-constant"` to build with the installed
 Clang -- a known MicroPython v1.24.1 issue with newer Clang treating a GNU
-extension warning as an error. `./tools/pico fw-build --local` does not add
+extension warning as an error. `./tools/robox firmware build --local` does not add
 this automatically yet; if a local build fails on `emitnx64.c` with a
 `-Wgnu-folding-constant` error, that's why.
 
-There used to be a `./tools/pico sync`/`mount` fast-iteration path that
+There used to be a `./tools/robox sync`/`mount` fast-iteration path that
 pushed loose files from `src/` straight to a board's filesystem in seconds,
 for testing without a full rebuild. They're gone now: every one of those
 files is frozen into the release build, so once a board is running
@@ -155,7 +155,7 @@ not just distributed ones), a loose copy is dead weight the frozen version
 always wins over -- `sync` had no effect at all against such a board, and
 that confusion is exactly what led to removing it rather than leaving a
 command around that quietly does nothing. The real cost: testing any
-change now needs a full firmware recompile + reflash (`./tools/pico
+change now needs a full firmware recompile + reflash (`./tools/robox
 deploy`, a couple of minutes) instead of an instant file push. There is no
 faster loop for this project's own source files; `program.py` (the
 user's uploaded program, never frozen) is unaffected and still updates
@@ -164,7 +164,7 @@ instantly through the normal app protocol.
 ## Verifying a release
 
 ```
-./tools/pico release
+./tools/robox firmware release
 ./tools/build_uf2.py verify-release build/robox-<version>.uf2   # run automatically by `release`
 ```
 
@@ -173,7 +173,7 @@ described, during this migration):
 
 1. Flash a `release` build onto a board with an existing `config.json`/
    `program.py` and old loose `roboxlib.py` etc. still present. Confirm both
-   data files are untouched (`./tools/pico ls /`).
+   data files are untouched (`./tools/robox ls /`).
 2. Confirm the frozen code is what's actually running, not the stale loose
    copies -- the reliable way is a physical check (e.g. the onboard LED,
    which `main.py` turns on early) or a behavioural difference, **not**
@@ -185,4 +185,4 @@ described, during this migration):
    tell apart from a real firmware bug. A genuine power-cycle, or a reboot
    triggered by `picotool load`/`picotool reboot` (not `mpremote reset`),
    avoids this.
-3. `./tools/run-tests` green.
+3. `./tools/robox test` green.

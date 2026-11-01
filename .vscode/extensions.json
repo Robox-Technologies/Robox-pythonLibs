@@ -10,7 +10,7 @@
     "ms-python.python",
     "ms-python.vscode-pylance",
 
-    // Nice-to-have: syntax highlighting and shellcheck for tools/pico.
+    // Nice-to-have: syntax highlighting and shellcheck for tools/robox.
     "timonwong.shellcheck"
   ],
   "unwantedRecommendations": [

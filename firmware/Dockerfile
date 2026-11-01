@@ -4,7 +4,7 @@
 # every dev and CI gets the exact same compiler.
 #
 # Build once:   docker build -t robox-fw-build firmware/
-# Used by:      ./tools/pico fw-build (docker run, repo mounted at /repo)
+# Used by:      ./tools/robox firmware build (docker run, repo mounted at /repo)
 FROM debian:12-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

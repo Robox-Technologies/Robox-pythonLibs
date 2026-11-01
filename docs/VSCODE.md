@@ -9,7 +9,7 @@ Two layers are set up, deliberately overlapping:
 | Layer | What it gives you | When you want it |
 | --- | --- | --- |
 | **MicroPico extension** | Status-bar buttons, a live vREPL terminal, right-click Upload/Download on files, remote filesystem browsing | Interactive work. This is the direct Thonny analogue. |
-| **`tools/pico` + VS Code tasks** | Scriptable `mpremote`/`picotool` commands, identical from the terminal or CI | Repeatable steps, the UF2 release build (which needs no board at all), anything you want in version control |
+| **`tools/robox` + VS Code tasks** | Scriptable `mpremote`/`picotool` commands, identical from the terminal or CI | Repeatable steps, the UF2 release build (which needs no board at all), anything you want in version control |
 
 ---
 
@@ -48,7 +48,7 @@ they fight over the serial port.
 ### 3. Install the MicroPython stubs
 
 ```bash
-./tools/pico stubs        # or the "Pico: Install type stubs" task
+./tools/robox dev stubs        # or the "Pico: Install type stubs" task
 ```
 
 Then reload the window (`Cmd/Ctrl+Shift+P` → *Developer: Reload Window*).
@@ -70,12 +70,12 @@ after a fresh clone.
 ### 4. Confirm the toolchain
 
 ```bash
-./tools/pico doctor
+./tools/robox dev doctor
 ```
 
 You should see `ok` for mpremote, littlefs-python, the stubs and pyrightconfig —
 and, if you plan to dump or flash a board, picotool. Plug in the Pico and run
-`./tools/pico devs`; it should list one port.
+`./tools/robox board ports`; it should list one port.
 
 Confirm type checking is healthy too:
 
@@ -91,7 +91,7 @@ You can also check what any board-touching command *would* do without
 actually doing it:
 
 ```bash
-DRY_RUN=1 ./tools/pico push template_program.py
+DRY_RUN=1 ./tools/robox board upload template_program.py
 ```
 
 ---
@@ -100,17 +100,17 @@ DRY_RUN=1 ./tools/pico push template_program.py
 
 | Thonny | MicroPico (interactive) | Task / CLI |
 | --- | --- | --- |
-| Shell pane | The **Pico (W) vREPL** terminal | `Pico: REPL` · `./tools/pico repl` |
-| Green **Run** button | `MicroPico > Run current file on Pico` | `Pico: Run current file (not saved to flash)` · `./tools/pico run <file>` |
-| **Stop/Restart** (Ctrl-C) | `Ctrl-C` in the vREPL | `Pico: Stop running program` · `./tools/pico stop` |
-| Files pane → *Upload to /* | — (no MicroPico equivalent now — see below) | `UF2: Build + flash (deploy)` · `./tools/pico deploy` |
-| Upload one file | Right-click → **Upload file to Pico** | `Pico: Upload current file` · `./tools/pico push <file>` |
-| Files pane → *Download to …* | Right-click a remote file → **Download** | `Pico: Download a file from board` · `./tools/pico pull <path>` |
-| Browsing the Pico's files | MicroPico's remote filesystem view | `Pico: List files on board` · `./tools/pico tree` |
-| **Run → Send EOF/Soft reboot** | `Ctrl-D` in the vREPL | `Pico: Soft reset board` · `./tools/pico soft-reset` |
-| Unplug/replug (hard reset) | `MicroPico > Hard reset` | `Pico: Reset board` · `./tools/pico reset` |
+| Shell pane | The **Pico (W) vREPL** terminal | `Pico: REPL` · `./tools/robox board repl` |
+| Green **Run** button | `MicroPico > Run current file on Pico` | `Pico: Run current file (not saved to flash)` · `./tools/robox board run <file>` |
+| **Stop/Restart** (Ctrl-C) | `Ctrl-C` in the vREPL | `Pico: Stop running program` · `./tools/robox board stop` |
+| Files pane → *Upload to /* | — (no MicroPico equivalent now — see below) | `UF2: Build + flash (deploy)` · `./tools/robox firmware deploy` |
+| Upload one file | Right-click → **Upload file to Pico** | `Pico: Upload current file` · `./tools/robox board upload <file>` |
+| Files pane → *Download to …* | Right-click a remote file → **Download** | `Pico: Download a file from board` · `./tools/robox board download <path>` |
+| Browsing the Pico's files | MicroPico's remote filesystem view | `Pico: List files on board` · `./tools/robox board files` |
+| **Run → Send EOF/Soft reboot** | `Ctrl-D` in the vREPL | `Pico: Soft reset board` · `./tools/robox board soft-reset` |
+| Unplug/replug (hard reset) | `MicroPico > Hard reset` | `Pico: Reset board` · `./tools/robox board reset` |
 | *Tools → Manage packages* | `MicroPico > Install package` | `mpremote mip install <pkg>` |
-| Deleting everything before reflashing | — | `Pico: Wipe board filesystem` · `./tools/pico wipe` |
+| Deleting everything before reflashing | — | `Pico: Wipe board filesystem` · `./tools/robox board wipe` |
 
 Run tasks with `Cmd/Ctrl+Shift+P` → **Tasks: Run Task**.
 `UF2: Build + flash (deploy)` is the default build task, so `Cmd/Ctrl+Shift+B`
@@ -169,14 +169,14 @@ loose file would be dead weight the frozen version always wins over. So the
 loop is build-and-flash, not upload-and-reset:
 
 ```bash
-./tools/pico deploy       # release (compile) + flash, one command
+./tools/robox firmware deploy       # release (compile) + flash, one command
 ```
 
 or the task **`UF2: Build + flash (deploy)`**. This takes a couple of
 minutes (a real firmware compile), not seconds — there is no faster
-loop for these files. `./tools/pico fw-doctor` checks the toolchain first if
+loop for these files. `./tools/robox firmware doctor` checks the toolchain first if
 something's wrong (needs Docker, or `arm-none-eabi-gcc`/`cmake` for
-`./tools/pico deploy --local`).
+`./tools/robox firmware deploy --local`).
 
 `config.json`/`program.py` are the only things that stay loose on the
 board's filesystem, and `deploy`/`release` never touch them (verified: the
@@ -190,7 +190,7 @@ for poking at those directly.
 Bluetooth/USB command dance, run it directly:
 
 ```bash
-./tools/pico run template_program.py
+./tools/robox board run template_program.py
 ```
 
 This executes the file from RAM with the real `roboxlib` imports resolved from
@@ -205,20 +205,20 @@ what's frozen, the toolchain setup). Quick version:
 
 ```bash
 git submodule update --init --recursive firmware/vendor/micropython
-./tools/pico fw-doctor    # checks Docker (or a local ARM toolchain)
-./tools/pico release      # -> build/robox-<version>.uf2, verified filesystem-safe
+./tools/robox firmware doctor    # checks Docker (or a local ARM toolchain)
+./tools/robox firmware release      # -> build/robox-<version>.uf2, verified filesystem-safe
 ```
 
 or the tasks **`UF2: Check firmware toolchain`** then
 **`UF2: Build release (the file end users update with)`**. The version comes
 from `CURRENT_FIRMWARE_VERSION` in `src/main.py`. `release` compiles via
 Docker by default; the **`UF2: Build release (local toolchain, no Docker)`**
-task (or `./tools/pico release --local`) uses `arm-none-eabi-gcc`/`cmake` off
+task (or `./tools/robox firmware release --local`) uses `arm-none-eabi-gcc`/`cmake` off
 PATH instead.
 
 To put the result on a board, hold BOOTSEL while plugging it in and either
-drag the UF2 onto the `RPI-RP2` volume, or run `./tools/pico flash
-build/robox-<version>.uf2`, or just `./tools/pico deploy` to build and flash
+drag the UF2 onto the `RPI-RP2` volume, or run `./tools/robox firmware flash
+build/robox-<version>.uf2`, or just `./tools/robox firmware deploy` to build and flash
 in one step (task **`UF2: Build + flash (deploy)`**).
 
 #### Capturing a UF2 off a board instead
@@ -230,12 +230,12 @@ Needs picotool.
 **Tasks: Run Task → `UF2: Capture from board`**, or:
 
 ```bash
-./tools/pico bootsel     # reboot into BOOTSEL, no button press needed
-./tools/pico uf2         # -> build/robox-<timestamp>.uf2
+./tools/robox firmware bootsel     # reboot into BOOTSEL, no button press needed
+./tools/robox firmware save         # -> build/robox-<timestamp>.uf2
 ```
 
 A dump can be fed back in as the base for `tools/build_uf2.py build
---base dump.uf2` directly (not `./tools/pico release`/`deploy`, which always
+--base dump.uf2` directly (not `./tools/robox firmware release`/`deploy`, which always
 compile their own firmware and never touch a littlefs image at all).
 
 ---
@@ -286,7 +286,7 @@ Rules that catch real mistakes — `reportAttributeAccessIssue`,
 
 **"no device found" / "could not open port"**
 Only one program can hold the serial port. Close Thonny. Close the MicroPico
-vREPL terminal (trash-can icon, not just hide) before running a `tools/pico`
+vREPL terminal (trash-can icon, not just hide) before running a `tools/robox`
 task, and vice versa. This is the cause of roughly every problem here, which is
 why `"micropico.openOnStart"` is `false` in `.vscode/settings.json`. Flip it to
 `true` if you work mostly in the vREPL.
@@ -294,28 +294,28 @@ why `"micropico.openOnStart"` is `false` in `.vscode/settings.json`. Flip it to
 **MicroPico connects but the REPL shows nothing / garbage**
 `src/main.py` runs an infinite loop at boot that reads from `sys.stdin`, so it
 competes with you for the serial link. Press `Ctrl-C` once in the vREPL to raise
-`KeyboardInterrupt` and get a `>>>` prompt. `./tools/pico repl` uses
+`KeyboardInterrupt` and get a `>>>` prompt. `./tools/robox board repl` uses
 `mpremote resume`, which attaches without a soft reset so you can see the loop's
 output before interrupting.
 
 **`Ctrl-C` doesn't interrupt**
-`./tools/pico stop` sends a single Ctrl-C, which is enough for `main.py`'s loop
+`./tools/robox board stop` sends a single Ctrl-C, which is enough for `main.py`'s loop
 (it has no `KeyboardInterrupt` handler and never calls `micropython.kbd_intr`).
 If it doesn't take, the board is probably wedged inside a `_thread` started by
 `start_program` — that thread doesn't receive the interrupt. Reset instead:
-`./tools/pico reset`. If even that fails, unplug and replug.
+`./tools/robox board reset`. If even that fails, unplug and replug.
 
 **Wrong port picked automatically**
 Set `"micropico.autoConnect": false` and `"micropico.manualComDevice"` in
 `.vscode/settings.json`. For the CLI, export the port:
 
 ```bash
-export PICO_PORT=/dev/cu.usbmodem1101   # find it with ./tools/pico devs
+export PICO_PORT=/dev/cu.usbmodem1101   # find it with ./tools/robox board ports
 ```
 
 **Pylance flags `machine`, `_thread`, `ustruct`, `utime`, `micropython`**
-The stubs aren't installed. Run `./tools/pico stubs`, then reload the window.
-`./tools/pico doctor` tells you whether `typings/` is populated.
+The stubs aren't installed. Run `./tools/robox dev stubs`, then reload the window.
+`./tools/robox dev doctor` tells you whether `typings/` is populated.
 
 **Suddenly *everything* is unresolved, including `json`, `sys` and `os`**
 Something has pointed `typeshedPath`/`python.analysis.typeshedPaths` at a
@@ -332,10 +332,10 @@ the setup.
 The board isn't in BOOTSEL mode. `reflash`/`deploy` already poll and wait for
 it (nudging the board into BOOTSEL first if mpremote can reach it), so this
 usually means neither mpremote nor picotool can see the board at all — check
-`./tools/pico devs`, or unplug and replug while holding BOOTSEL by hand.
+`./tools/robox board ports`, or unplug and replug while holding BOOTSEL by hand.
 
-**`./tools/pico release`/`fw-build` fails with a toolchain error**
-Run `./tools/pico fw-doctor` first — it checks Docker (or a local
+**`./tools/robox firmware release`/`fw-build` fails with a toolchain error**
+Run `./tools/robox firmware doctor` first — it checks Docker (or a local
 `arm-none-eabi-gcc`/`cmake`) and whether the MicroPython submodule is
 checked out. See `docs/RELEASE.md` for the known Docker/local build-cache
 collision and the Clang `-Wgnu-folding-constant` issue on some machines.
@@ -356,8 +356,8 @@ is no loose-file upload path for this any more.
 .vscode/extensions.json    recommended (and unwanted) extensions
 .vscode/tasks.json         every Pico/UF2 command as a runnable task
 pyrightconfig.json         IntelliSense + type-checking config (authoritative)
-typings/                   MicroPython stubs (gitignored; ./tools/pico stubs)
-tools/pico                 mpremote/picotool wrapper backing all the tasks
+typings/                   MicroPython stubs (gitignored; ./tools/robox dev stubs)
+tools/robox                unified command backing all the tasks
 tools/build_uf2.py         host-side UF2 builder (no board needed)
 tests/test_build_uf2.py    offline tests for that builder
 requirements-dev.txt       host-side Python deps (mpremote, bleak, littlefs-python)
@@ -370,11 +370,11 @@ committed, so a fresh clone needs exactly two commands:
 
 ```bash
 python3 -m pip install --user -r requirements-dev.txt
-./tools/pico stubs
+./tools/robox dev stubs
 ```
 
 `micropico.syncFolder`/`syncFileTypes`/`pyIgnore` are still set in
 `.vscode/settings.json` from before `src/` was frozen into the firmware.
 They're harmless (MicroPico's "Upload project to Pico" button still runs,
 it just uploads files nothing imports any more) but don't do anything
-useful for this repo now — use `./tools/pico deploy` instead.
+useful for this repo now — use `./tools/robox firmware deploy` instead.

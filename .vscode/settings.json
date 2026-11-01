@@ -32,7 +32,7 @@
   ],
 
   // Set to false on purpose: openOnStart grabs the serial port the moment the
-  // window opens, which then blocks ./tools/pico and any task that talks to
+  // window opens, which then blocks ./tools/robox and any task that talks to
   // the board. Open the vREPL explicitly when you want it
   // (MicroPico > Connect), or flip this to true if you work only in the vREPL.
   "micropico.openOnStart": false,

@@ -4,6 +4,8 @@ import difflib
 import hashlib
 import time
 
+import protocol
+
 from . import framed, transports
 
 
@@ -92,13 +94,11 @@ def run_case(
     pacer=None,
 ):
     """Upload one corpus and read the result back over USB."""
-    from . import protocol_shim
-
     delay = 0.0 if chunk_delay_ms is None else chunk_delay_ms / 1000.0
 
     # Every non-blank line is stored verbatim, so the oracle is just the
     # normalised program. There are no protocol losses left to model.
-    expected = protocol_shim.normalise(code)
+    expected = protocol.normalise_program(code)
     upload = framed.upload(
         transport,
         code,

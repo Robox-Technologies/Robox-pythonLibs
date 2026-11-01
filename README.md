@@ -17,15 +17,15 @@ Quick start with VS Code:
 
 ```bash
 python3 -m pip install --user -r requirements-dev.txt
-./tools/pico stubs           # MicroPython stubs for IntelliSense -> typings/
-./tools/pico doctor          # check the toolchain
+./tools/robox dev stubs      # MicroPython stubs for IntelliSense -> typings/
+./tools/robox dev doctor     # check the host toolchain
 git submodule update --init --recursive firmware/vendor/micropython
-./tools/pico fw-doctor       # check the firmware cross-compile toolchain
-./tools/pico deploy          # build a custom firmware and flash it onto the Pico
-./tools/pico repl            # open the MicroPython prompt
+./tools/robox firmware doctor
+./tools/robox firmware deploy
+./tools/robox board repl     # open the MicroPython prompt
 ```
 
-Run `./tools/pico help` for the full command list. The same commands are
+Run `./tools/robox help` for the full command list. The same commands are
 available in VS Code under **Tasks: Run Task**.
 
 ## Layout
@@ -44,9 +44,7 @@ template_program.py    starting point for a user robot program
 firmware/manifest.py   what's frozen into the custom-built firmware
 firmware/Dockerfile    pinned ARM cross-compile toolchain
 firmware/vendor/       git submodule: MicroPython + pico-sdk (+ all its own submodules)
-tools/pico             mpremote/picotool wrapper (CLI + backs the VS Code tasks)
-tools/scan_ble.py      scan for an exact advertised BLE name after renaming
-tools/rename_robox.py  rename a Robox over its USB connection
+tools/robox            unified board, firmware, development, and test CLI
 tools/build_uf2.py     assembles a UF2 on the host, no board required
 pyrightconfig.json     IntelliSense / type-checking config
 docs/VSCODE.md         editor setup and workflows
@@ -75,8 +73,8 @@ a stock UF2.
 
 ```bash
 git submodule update --init --recursive firmware/vendor/micropython
-./tools/pico fw-doctor    # checks Docker (or a local ARM toolchain)
-./tools/pico release      # -> build/robox-<version>.uf2, verified filesystem-safe
+./tools/robox firmware doctor
+./tools/robox firmware release      # -> build/robox-<version>.uf2
 ```
 
 The version is named at the top of [`src/main.py`](src/main.py)
@@ -86,7 +84,7 @@ doesn't depend on whatever's on a dev's PATH); pass `--local` to use
 `arm-none-eabi-gcc`/`cmake` off PATH instead.
 
 ```bash
-./tools/pico inspect build/robox-<version>.uf2   # list what a UF2 actually contains
+./tools/robox firmware inspect build/robox-<version>.uf2
 ./tools/build_uf2.py verify-release build/robox-<version>.uf2  # zero-FS-blocks check (release already runs this)
 ```
 
@@ -94,7 +92,7 @@ Flashing is unchanged — hold BOOTSEL while plugging the board in, then either
 drag the UF2 onto the `RPI-RP2` volume or:
 
 ```bash
-./tools/pico flash build/robox-<version>.uf2
+./tools/robox firmware flash build/robox-<version>.uf2
 ```
 
 ### Provisioning a brand-new board
@@ -111,8 +109,8 @@ board). Needs [`picotool`](https://github.com/raspberrypi/picotool) and the
 board in BOOTSEL mode — the task is **`UF2: Capture from board`**, or:
 
 ```bash
-./tools/pico bootsel     # reboot into BOOTSEL, no button press needed
-./tools/pico uf2         # -> build/robox-<timestamp>.uf2
+./tools/robox firmware bootsel
+./tools/robox firmware save         # -> build/robox-<timestamp>.uf2
 ```
 
 To do it by hand: unplug the Pico and plug it back in while holding BOOTSEL
@@ -134,5 +132,5 @@ The flash map above is the 2 MB Pico's. `build_uf2.py build` reads the
 filesystem window out of the base firmware's own binary-info block (via
 `picotool`, when installed), so a firmware for a differently laid out board
 comes out right by itself. If `picotool` is missing it falls back to the
-RPI_PICO numbers, which `--fs-base`/`--fs-size` override; `./tools/pico
+RPI_PICO numbers, which `--fs-base`/`--fs-size` override; `./tools/robox
 fs-layout` prints the real numbers from a connected board.

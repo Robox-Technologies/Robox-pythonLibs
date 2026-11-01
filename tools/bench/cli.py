@@ -10,7 +10,9 @@ import datetime
 import json
 import sys
 
-from . import corpus, protocol_shim, report as report_module, runner, transports
+import protocol
+
+from . import corpus, report as report_module, runner, transports
 
 
 def build_parser():
@@ -85,7 +87,7 @@ def main(argv=None):
     pacer = (
         None
         if args.chunk_delay_ms is not None
-        else protocol_shim.new_pacer()
+        else protocol.AdaptivePacer()
     )
 
     for iteration in range(args.repeat):

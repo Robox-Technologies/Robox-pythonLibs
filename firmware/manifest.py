@@ -18,7 +18,7 @@
 #
 # Used via:
 #   make BOARD=RPI_PICO FROZEN_MANIFEST=<repo>/firmware/manifest.py
-# (see ./tools/pico fw-build). Relative paths below resolve against this
+# (see ./tools/robox firmware build). Relative paths below resolve against this
 # file's own directory -- see manifestfile.py's include(), which os.chdir()s
 # there before exec'ing a manifest.
 
