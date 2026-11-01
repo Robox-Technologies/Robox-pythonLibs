@@ -135,6 +135,7 @@ def run_user_program(comm):
 
         ns = {
             "comm": comm,
+            "motors": motors,
             "print": sandbox_print
         }
 
