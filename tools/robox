@@ -40,6 +40,8 @@ Firmware:
   firmware reflash [FILE]             reboot to BOOTSEL and flash
   firmware inspect FILE               inspect a UF2
   firmware bootsel                    reboot into BOOTSEL mode
+  firmware save [FILE]                capture board flash to a UF2
+  firmware fs-layout                  show filesystem geometry
 
 Development:
   dev doctor                          check host development tools
