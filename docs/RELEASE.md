@@ -4,7 +4,7 @@
 
 A release used to be a stock, unmodified MicroPython UF2 plus a **freshly
 formatted littlefs filesystem** built from `src/`. Every file in `src/` --
-`main.py`, `roboxlib.py`, `communication.py`, ... -- was a loose file in that
+`main.py`, `app/`, `roboxlib.py`, `communication/`, ... -- was a loose file in that
 filesystem, not frozen into anything. Rebuilding that filesystem from scratch
 on every release meant `config.json` (motor/colour calibration) and
 `program.py` (the user's uploaded program) were silently wiped on every
@@ -19,8 +19,8 @@ MicroPython from source with our code frozen in -- see `firmware/manifest.py`.
 
 ## What's frozen, and what autorun actually does
 
-**Frozen**: `main.py`, `roboxlib.py`, `communication.py`, `framed.py`,
-`protocol.py`, `colors.py`, `calibration.py`, `matrix.py`, and `lib/picozero`.
+**Frozen**: `main.py`, `app/`, `roboxlib.py`, `communication/`, `framed/`,
+`protocol/`, `hardware/`, `colors/`, and `lib/picozero`.
 All vendor code -- nothing here is ever hand-edited on a device; users write
 `program.py` on the companion website instead.
 
@@ -47,7 +47,7 @@ because the generic guidance out there is contradictory or version-specific:
    its first action, before importing anything else.
 
 An earlier version of this migration added a "self-heal" mechanism (a loose
-`/main.py` stub plus code in `roboxlib.py`/`communication.py` to rewrite it)
+`/main.py` stub plus code in `roboxlib.py`/`communication/` to rewrite it)
 on the theory that a frozen `main.py` would *not* autorun and something else
 was needed to force it. That theory was wrong (see point 1), and the
 mechanism was actively harmful: on any firmware *without* frozen modules --

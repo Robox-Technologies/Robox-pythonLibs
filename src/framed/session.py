@@ -24,11 +24,7 @@ class FramedSession:
         self.expected_lines = 0
         self.expected_crc = 0
 
-        #: True only after an END frame or an existing-file verification
-        #: request whose checksum matched.
         self.verified = False
-
-    # --- outbound ----------------------------------------------------------
 
     def _send_flow(self, kind):
         """Write a flow frame straight out, bypassing the message queue."""
@@ -42,8 +38,6 @@ class FramedSession:
         """Queue a device message. The interface frames it."""
         self.comm.write_message(message_type, content)
 
-    # --- inbound -----------------------------------------------------------
-
     def feed(self, line):
         """Process one framed line. Returns command names to dispatch."""
         frames, damage = self.reader.feed((line + "\n").encode())
@@ -51,15 +45,6 @@ class FramedSession:
 
         commands = []
         for frame in frames:
-            # BEGIN and COMMAND are self-contained: they start a new
-            # interaction rather than continuing a stream, so they
-            # resynchronise the sequence.
-            #
-            # The sequence space exists to order the frames *within* one
-            # upload. Without this, a second upload restarts at sequence 0
-            # while the receiver still expects N and every frame reads as a
-            # stale duplicate, and a reconnecting client's firmware check is
-            # ignored the same way. The checksum still protects both.
             if frame.kind in (p.KIND_BEGIN, p.KIND_COMMAND):
                 self.receiver.reset(frame.seq)
 
@@ -93,8 +78,6 @@ class FramedSession:
         elif kind == p.KIND_END:
             self._end(frame)
         elif kind == p.KIND_COMMAND:
-            # The only place a payload is read as a command, and only because
-            # its frame says so. Data frames are never inspected.
             name = frame.text()
             if not p.is_command_name(name):
                 self.reply("error", "Unknown command: {}".format(name))
@@ -131,14 +114,11 @@ class FramedSession:
         try:
             text = payload.decode()
         except Exception:
-            # Cannot happen for an intact frame: the checksum already passed.
             self.reply("error", "Undecodable program line")
             return
 
         line = text + "\n"
         self.out_file.write(line)
-        # Running CRC over exactly what was written, so the comparison at END
-        # covers the stored file rather than what we believe we received.
         self.running_crc = crc32(line.encode(), self.running_crc) & 0xFFFFFFFF
         self.stored_lines += 1
 
@@ -159,9 +139,6 @@ class FramedSession:
         crc_ok = declared is not None and self.running_crc == declared
         self.verified = lines_ok and crc_ok
 
-        # A dict, not a pre-built JSON string: write_message runs json.dumps
-        # over it, so a string would arrive at the client escaped inside
-        # another string and its verdict check would never match.
         self.reply(
             "uploaded",
             {

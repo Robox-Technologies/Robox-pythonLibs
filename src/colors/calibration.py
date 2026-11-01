@@ -34,9 +34,6 @@ def scale(rgb, calibration):
     calibrated = []
     for value, lo, hi in zip(rgb, black, white):
         span = hi - lo
-        # A zero or negative span means white and black were calibrated the
-        # same (or backwards), which cannot happen with real light. Treat it
-        # as uncalibrated rather than dividing by zero.
         scaled = 0 if span <= 0 else (value - lo) / span * 255
         calibrated.append(min(255, max(0, scaled)))
 

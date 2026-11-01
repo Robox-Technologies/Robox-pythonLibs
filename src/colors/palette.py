@@ -11,8 +11,6 @@ STANDARD_COLORS = {
     "white": (255, 255, 255),
 }
 
-# Below this total, channel ratios are sensor noise rather than a hue: the
-# sensor is looking at (near) nothing, which is what black means anyway.
 _DARK_TOTAL = 30
 
 
@@ -50,8 +48,6 @@ def closest_color_name(rgb, palette=None):
     if total <= _DARK_TOTAL:
         return "black"
 
-    # total is checked above, so this is never None like the palette side
-    # below can be.
     reading = tuple(channel / total for channel in rgb)
     best_name, best_distance = None, None
     for name, reference_rgb in palette.items():

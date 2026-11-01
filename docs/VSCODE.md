@@ -158,7 +158,7 @@ The `args` strings must match the task labels exactly.
 
 ## Everyday workflows
 
-### Editing the firmware (`src/main.py`, `roboxlib.py`, `communication.py`)
+### Editing the firmware (`src/main.py`, `src/app/`, `roboxlib.py`, `communication/`)
 
 Every file in `src/` (except `lib/picozero`, which is frozen too, and
 `template_program.py`, which isn't part of the firmware at all) is frozen

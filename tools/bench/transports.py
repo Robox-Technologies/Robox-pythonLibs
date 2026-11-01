@@ -10,7 +10,7 @@ import sys
 import time
 
 # Mirrors bleTransport.ts. The pause between chunks is not a constant any more:
-# AdaptivePacer in src/protocol.py decides it from observed loss.
+# AdaptivePacer in src/protocol/pacing.py decides it from observed loss.
 BLE_CHUNK_SIZE = 20
 
 UART_SERVICE_UUID = "0000ffe0-0000-1000-8000-00805f9b34fb"
@@ -231,16 +231,16 @@ class BleTransport(Transport):
 
     def read_available(self):
         # Give the notify callbacks a chance to land before we look.
-        self._run(_sleep(self._loop, 0))
+        self._run(_sleep())
         out = bytes(self._rx)
         del self._rx[:]
         return out
 
 
-async def _sleep(_loop, seconds):
+async def _sleep():
     import asyncio
 
-    await asyncio.sleep(seconds)
+    await asyncio.sleep(0)
 
 
 # -- board control (over USB, via mpremote) -----------------------------------

@@ -32,14 +32,15 @@ freeze(
     (
         "main.py",
         "roboxlib.py",
-        "communication.py",
-        "framed.py",
-        "protocol.py",
-        "colors.py",
-        "calibration.py",
-        "matrix.py",
     ),
 )
+
+freeze("../src", "protocol")
+freeze("../src", "hardware")
+freeze("../src", "communication")
+freeze("../src", "framed")
+freeze("../src", "colors")
+freeze("../src", "app")
 
 # A string `script` that names a directory inside `path` freezes it as a
 # package (picozero/__init__.py, picozero/picozero.py) -- passing the two

@@ -31,9 +31,14 @@ available in VS Code under **Tasks: Run Task**.
 ## Layout
 
 ```
-src/main.py            firmware entry point; command loop over USB + Bluetooth
-src/roboxlib.py        motors, ultrasonic, servo, line and colour sensors
-src/communication.py   USB / BLE transports and the outgoing message queue
+src/main.py            minimal firmware entry point
+src/app/               firmware runtime and command loop
+src/roboxlib.py        public hardware API facade
+src/hardware/          motors, sensors, and board configuration
+src/communication/      USB/BLE transports, message formatting, and queue
+src/protocol/          wire framing, sequencing and upload flow control
+src/framed/            framed upload session
+src/colors/             palette matching, calibration, and matrix correction
 src/lib/picozero       vendored dependency
 template_program.py    starting point for a user robot program
 firmware/manifest.py   what's frozen into the custom-built firmware
@@ -55,8 +60,8 @@ upload or inspect directly.
 
 ## Building the release UF2
 
-**main.py, roboxlib.py, communication.py, framed.py, protocol.py, colors.py,
-calibration.py, matrix.py and lib/picozero are frozen into the firmware
+**main.py, app/, roboxlib.py, communication/, framed/, protocol/, colors/,
+and lib/picozero are frozen into the firmware
 itself** (compiled from source, not the stock micropython.org build), so a
 release UF2 carries **zero filesystem blocks** — it can't touch
 `config.json` or `program.py` on any board it's flashed onto, no matter what

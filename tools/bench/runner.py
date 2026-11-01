@@ -87,7 +87,6 @@ def run_case(
     name,
     code,
     port=None,
-    ack_timeout=10.0,
     settle=0.5,
     chunk_delay_ms=None,
     pacer=None,
