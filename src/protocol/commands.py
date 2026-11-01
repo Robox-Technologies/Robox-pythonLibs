@@ -34,6 +34,7 @@ COMMAND_NAMES = (
     "reset_device",
     "boot_loader",
     "disconnect_device",
+    "debug_status",
 )
 
 GET_CALIBRATION_PREFIX = "get_calibration_"

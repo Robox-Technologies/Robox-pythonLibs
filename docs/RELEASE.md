@@ -123,6 +123,7 @@ needs the top-level ones initialized too, not just pico-sdk's.
 git submodule update --init --recursive firmware/vendor/micropython
 ./tools/robox firmware doctor
 ./tools/robox firmware release      # -> build/robox-<version>.uf2
+./tools/robox firmware release --debug  # development image with logging
 ```
 
 Docker (`firmware/Dockerfile`) is the default build path so a release

@@ -33,13 +33,13 @@ class SequencedReceiver:
             self.accepted += 1
             return "accept"
 
-        if sequence_distance(self.expected, frame.seq) < SEQUENCE_MODULO // 2:
-            self.duplicates += 1
-            return "duplicate"
+        if sequence_distance(frame.seq, self.expected) < SEQUENCE_MODULO // 2:
+            self.gaps += 1
+            self.discarding = True
+            return "gap"
 
-        self.gaps += 1
-        self.discarding = True
-        return "gap"
+        self.duplicates += 1
+        return "duplicate"
 
     def note_corruption(self, count=1):
         """A damaged frame leaves the next sequence number unknown."""
@@ -56,4 +56,3 @@ class SequencedReceiver:
     def take_ack(self):
         self.since_ack = 0
         return self.expected, self.credit
-

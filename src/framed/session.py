@@ -3,6 +3,7 @@
 from binascii import crc32
 
 import protocol as p
+from debug import log, log_error
 
 FRAME_PREFIX = chr(p.SOH)
 
@@ -30,6 +31,16 @@ class FramedSession:
         """Write a flow frame straight out, bypassing the message queue."""
         expected, credit = self.receiver.take_ack()
         payload = "%02x,%04x" % (expected, credit)
+        log(
+            "protocol",
+            "tx_flow",
+            level=1,
+            seq=self.comm.out_seq,
+            kind=kind,
+            expected=expected,
+            credit=credit,
+            bytes=len(payload),
+        )
         self.comm.write_raw(
             p.encode_frame(self.comm.next_out_seq(), kind, payload.encode())
         )
@@ -42,9 +53,20 @@ class FramedSession:
         """Process one framed line. Returns command names to dispatch."""
         frames, damage = self.reader.feed((line + "\n").encode())
         self.receiver.note_corruption(damage)
+        if damage:
+            log("protocol", "rx_corruption", level=1, count=damage)
 
         commands = []
         for frame in frames:
+            log(
+                "protocol",
+                "rx_frame",
+                level=1,
+                seq=frame.seq,
+                kind=frame.kind,
+                bytes=len(frame.payload),
+                payload=frame.payload.hex(),
+            )
             if frame.kind in (p.KIND_BEGIN, p.KIND_COMMAND):
                 self.receiver.reset(frame.seq)
 
@@ -53,9 +75,6 @@ class FramedSession:
             command = self._apply(frame)
             if command:
                 commands.append(command)
-
-        if self.receiver.needs_nak() or self.receiver.should_ack():
-            self.flush()
 
         return commands
 
@@ -79,7 +98,9 @@ class FramedSession:
             self._end(frame)
         elif kind == p.KIND_COMMAND:
             name = frame.text()
+            log("command", "received", level=1, name=name)
             if not p.is_command_name(name):
+                log("protocol", "unknown_command", name=name)
                 self.reply("error", "Unknown command: {}".format(name))
                 return None
             return name
@@ -91,6 +112,7 @@ class FramedSession:
         try:
             self.expected_lines, self.expected_crc = p.parse_begin(frame.payload)
         except Exception:
+            log("upload", "malformed_begin", level=1)
             self.reply("error", "Malformed upload header")
             return
 
@@ -102,7 +124,10 @@ class FramedSession:
         try:
             self.out_file = open(self.filename, "w")
         except Exception as exc:
+            log_error("upload", exc, event="open_failed")
             self.reply("error", "Could not open program file: {}".format(exc))
+        else:
+            log("upload", "started", level=1, lines=self.expected_lines)
 
     def _store(self, frame):
         if not self.out_file:
@@ -114,6 +139,7 @@ class FramedSession:
         try:
             text = payload.decode()
         except Exception:
+            log("upload", "undecodable_line", level=1)
             self.reply("error", "Undecodable program line")
             return
 
@@ -121,6 +147,14 @@ class FramedSession:
         self.out_file.write(line)
         self.running_crc = crc32(line.encode(), self.running_crc) & 0xFFFFFFFF
         self.stored_lines += 1
+        if self.stored_lines == 1 or self.stored_lines % 10 == 0:
+            log(
+                "upload",
+                "stored",
+                level=1,
+                lines=self.stored_lines,
+                bytes=len(line),
+            )
 
     def _end(self, frame):
         if not self.out_file:
@@ -138,6 +172,13 @@ class FramedSession:
         lines_ok = self.stored_lines == self.expected_lines
         crc_ok = declared is not None and self.running_crc == declared
         self.verified = lines_ok and crc_ok
+        log(
+            "upload",
+            "verified" if self.verified else "failed",
+            level=1,
+            lines=self.stored_lines,
+            crc="%08x" % self.running_crc,
+        )
 
         self.reply(
             "uploaded",

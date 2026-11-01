@@ -41,6 +41,8 @@ freeze("../src", "communication")
 freeze("../src", "framed")
 freeze("../src", "colors")
 freeze("../src", "app")
+freeze("../src", "debug")
+freeze("../build/generated", "build_info.py")
 
 # A string `script` that names a directory inside `path` freezes it as a
 # package (picozero/__init__.py, picozero/picozero.py) -- passing the two

@@ -41,12 +41,18 @@ class BluetoothCommunication(CommunicationInterface):
         return self.ok
 
     def read_line(self):
-        if self.uart.any():
-            data = self.uart.read()
-            if data:
-                self.buffer += (
-                    data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-                )
+        try:
+            if self.uart.any():
+                data = self.uart.read()
+                if data:
+                    self.buffer += (
+                        data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+                    )
+        except Exception as error:
+            from debug import log_error
+
+            log_error("bluetooth", error, event="read_failed")
+            return None
 
         if len(self.buffer) > MAX_LINE_LENGTH:
             start = self.buffer.rfind(SOH_BYTE)

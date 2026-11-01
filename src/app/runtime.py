@@ -3,6 +3,13 @@ import _thread
 import machine
 import time
 
+from build_info import BUILD_TYPE, DEBUG, FIRMWARE_VERSION
+from debug import configure as configure_debug
+from debug import log, log_error
+
+configure_debug()
+log("boot", "started", level=1, version=FIRMWARE_VERSION, build=BUILD_TYPE)
+
 if "" in sys.path:
     sys.path.remove("")
     sys.path.append("")
@@ -39,7 +46,6 @@ from protocol import (
     parse_program_checksum,
 )
 
-CURRENT_FIRMWARE_VERSION = "2.1.0"
 PROTOCOL_VERSION = 2
 
 PROGRAM_FILENAME = "program.py"
@@ -56,14 +62,19 @@ LED.on()
 colorSensor = None
 try:
     colorSensor = ColorSensor()
-except Exception:
+except Exception as error:
+    log_error("hardware", error, component="color_sensor")
     colorSensor = None
 
 motors = Motors()
+log("hardware", "motors_ready")
 
 
 ble = BluetoothCommunication()
 usb = USBCommunication()
+if usb.available():
+    configure_debug(usb)
+    log("communication", "usb_ready", level=1)
 
 communications = []
 current_communication_method = None
@@ -73,7 +84,10 @@ if usb.available():
 
 if ble.available():
     communications.append(ble)
+    log("communication", "bluetooth_ready")
     ble.write_message("connect", "")
+else:
+    log("communication", "bluetooth_unavailable")
 
 
 def ensure_ble_configured():
@@ -81,8 +95,10 @@ def ensure_ble_configured():
     if not ble.available() or load_ble_configured():
         return False
     if ble.configure(load_ble_name()):
+        log("communication", "bluetooth_configured", level=1)
         save_ble_configured(True)
         return True
+    log("communication", "bluetooth_configuration_failed", level=1)
     return False
 
 
@@ -129,10 +145,12 @@ def run_user_program(comm):
         exec(code, ns)
 
     except Exception as e:
+        log_error("program", e)
         comm.write_message("error", str(e))
 
     finally:
         program_running = False
+        log("program", "stopped", level=1)
 
 
 def _motor_calibration():
@@ -168,12 +186,14 @@ def dispatch_command(comm, command):
 
     if command == "firmware_check":
         current_communication_method = comm
+        log("command", "firmware_check", level=1)
         comm.write_message(
             "firmware",
-            "%s+proto%d" % (CURRENT_FIRMWARE_VERSION, PROTOCOL_VERSION),
+            "%s+proto%d+%s" % (FIRMWARE_VERSION, PROTOCOL_VERSION, BUILD_TYPE),
         )
 
     elif command == "start_program":
+        log("command", "start_program", level=1)
         motors.stop_motors()
 
         if program_running:
@@ -188,6 +208,7 @@ def dispatch_command(comm, command):
 
         LED.on()
         program_running = True
+        log("program", "started", level=1)
 
         try:
             _thread.start_new_thread(run_user_program, (comm,))
@@ -275,6 +296,7 @@ def dispatch_command(comm, command):
         )
 
     elif command == "color_mode":
+        log("command", "color_mode")
         if not colorSensor:
             comm.write_message("error", "Color sensor not connected")
         else:
@@ -294,6 +316,7 @@ def dispatch_command(comm, command):
             comm.write_message("error", "Could not rename device")
 
     elif command == "reset_device":
+        log("command", "reset_device", level=1)
         machine.reset()
 
     elif command == "boot_loader":
@@ -303,6 +326,10 @@ def dispatch_command(comm, command):
         if comm == current_communication_method:
             current_communication_method = None
 
+    elif command == "debug_status":
+        log("command", "debug_status")
+        comm.write_message("debug", {"enabled": DEBUG, "build": BUILD_TYPE})
+
 
 def handle_line(comm, line):
     """Act on one received line."""
@@ -310,6 +337,8 @@ def handle_line(comm, line):
     if start < 0:
         return
 
+    if comm is usb:
+        configure_debug(usb)
     for name in framed_session(comm).feed(line[start:]):
         dispatch_command(comm, name)
 
@@ -318,12 +347,14 @@ def poll(comm):
     """Read and act on everything one interface has buffered."""
     lines = comm.read_lines(MAX_LINES_PER_POLL)
     for line in lines:
-        handle_line(comm, line)
-
-    if lines:
-        session = framed_sessions.get(comm)
-        if session is not None:
-            session.flush()
+        session = framed_session(comm)
+        try:
+            handle_line(comm, line)
+        except Exception as error:
+            log_error("protocol", error, event="line_failed")
+        finally:
+            if session is not None:
+                session.flush()
 
 
 def send_color_if_due():
@@ -351,11 +382,15 @@ def send_color_if_due():
 
 
 ensure_ble_configured()
+log("boot", "ready", level=1)
 
 while True:
-    flush_outgoing_messages()
+    try:
+        flush_outgoing_messages()
 
-    for comm in communications:
-        poll(comm)
+        for comm in communications:
+            poll(comm)
 
-    send_color_if_due()
+        send_color_if_due()
+    except Exception as error:
+        log_error("runtime", error)

@@ -35,6 +35,17 @@ class USBCommunication(CommunicationInterface):
     def write_raw(self, data):
         if isinstance(data, str):
             data = data.encode()
+        from debug import log
+
+        if not getattr(self, "_writing_debug", False):
+            log(
+                "usb",
+                "tx_bytes",
+                level=1,
+                bytes=len(data),
+                payload=data.hex(),
+            )
         sys.stdout.buffer.write(data)
-
-
+        flush = getattr(sys.stdout.buffer, "flush", None)
+        if flush is not None:
+            flush()

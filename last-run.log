@@ -1,0 +1,9 @@
+[58] boot started build=debug version=2.1.0
+[243] hardware motors_ready
+[252] communication usb_ready
+[291] communication bluetooth_ready
+[298] boot ready
+[304] communication tx content= message=connect transport=Bluetooth
+[315] communication tx content=[290] communication usb_ready message=debug transport=USB
+[326] communication tx content=[302] boot ready message=debug transport=USB
+[336] communication tx content=[310] communication tx content= message=connect transport=Bluetooth message=debug transport=USB

@@ -28,6 +28,8 @@ Board:
   board wipe                          remove user files
   board soft-reset                    restart the interpreter
   board command COMMAND               send a firmware command
+  board monitor [--port PATH]         watch compact USB debug events
+  board debug-log [--output FILE]     download the detailed last-run log
   board rename NAME                   rename the board
   board scan [options]                scan for a BLE advertisement
 
@@ -84,6 +86,19 @@ board() {
     command)
       [[ $# -gt 0 ]] || die "board command requires a command name"
       exec python3 "$REPO_ROOT/tools/send_command.py" "$@"
+      ;;
+    monitor)
+      exec python3 "$REPO_ROOT/tools/debug_monitor.py" "$@"
+      ;;
+    debug-log)
+      local output="$REPO_ROOT/last-run.log"
+      if [[ "${1:-}" == "--output" ]]; then
+        [[ $# -ge 2 ]] || die "board debug-log --output requires a file"
+        output="$2"
+        shift 2
+      fi
+      [[ $# -eq 0 ]] || die "usage: board debug-log [--output FILE]"
+      exec "$PICO" pull debug.log "$output"
       ;;
     rename)
       exec python3 "$REPO_ROOT/tools/rename_robox.py" "$@"

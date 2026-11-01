@@ -70,6 +70,9 @@ Send `Ctrl-C` to interrupt the running program without resetting the board.
 ./tools/robox board stop
 ```
 
+The website's stop action uses `reset_device`, which restarts the board and
+therefore stops any running user program. `stop_motors` only stops the motors.
+
 ### `board reset`
 
 Perform a hard MicroPython reset using `machine.reset()`.
@@ -174,6 +177,33 @@ BLE dependency from `requirements-dev.txt`.
 ./tools/robox board scan --name MyRobot --show-all
 ```
 
+### `board monitor`
+
+Watch compact, important debug events from a debug firmware over USB. It does
+not print every protocol frame.
+
+During an upload, the monitor shows received upload frames, periodic stored
+line counts, acknowledgements/negative acknowledgements, and the final upload
+result. The detailed event stream is also written to `debug.log`.
+
+```bash
+./tools/robox board monitor
+./tools/robox board monitor --port /dev/cu.usbmodem1101
+```
+
+Use `board monitor` when the website is connected over Bluetooth. When the
+website owns the USB port, retrieve the detailed communication history with
+`board debug-log` after disconnecting it.
+
+### `board debug-log`
+
+Download the detailed log from the most recent boot-to-reset run.
+
+```bash
+./tools/robox board debug-log
+./tools/robox board debug-log --output last-run.log
+```
+
 ## Firmware commands
 
 Firmware commands build or manipulate UF2 files. Building a release does not
@@ -197,6 +227,7 @@ Docker is used by default.
 ```bash
 ./tools/robox firmware build
 ./tools/robox firmware build --local
+./tools/robox firmware build --debug
 ```
 
 ### `firmware release`
@@ -208,6 +239,7 @@ existing board. The optional argument selects the output path.
 ./tools/robox firmware release
 ./tools/robox firmware release build/robox-custom.uf2
 ./tools/robox firmware release --local
+./tools/robox firmware release --debug
 ```
 
 ### `firmware deploy`
@@ -217,6 +249,7 @@ Build a release UF2 and flash it to a board in BOOTSEL mode in one workflow.
 ```bash
 ./tools/robox firmware deploy
 ./tools/robox firmware deploy build/robox-custom.uf2
+./tools/robox firmware deploy --debug
 ```
 
 ### `firmware flash`

@@ -321,15 +321,37 @@ cmd_fw_doctor() {
 # FW_OUT/FW_MPY_CROSS_BUILD_DIR as globals for the caller (cmd_release etc.)
 # to the pair that was actually just built -- see the note above FW_DIR.
 cmd_fw_build() {
+  local debug=0
+  local local_build=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --debug) debug=1 ;;
+      --local) local_build=1 ;;
+      *) die "unknown firmware build option: $1" ;;
+    esac
+    shift
+  done
   cmd_fw_require_submodule
 
-  if [[ "${1:-}" == "--local" ]]; then
-    shift
-    FW_BUILD_DIR="$REPO_ROOT/build/mp-build-local"
-    FW_MPY_CROSS_BUILD_DIR="$FW_MICROPYTHON/mpy-cross/build-local"
+  local suffix=""
+  [[ $debug -eq 1 ]] && suffix="-debug"
+  local version
+  version="$(sed -n "s/^FIRMWARE_VERSION = \"\(.*\)\"$/\1/p" "$REPO_ROOT/src/build_info.py")"
+  [[ -n "$version" ]] || version="dev"
+  local generated="$REPO_ROOT/build/generated"
+  mkdir -p "$generated"
+  cat > "$generated/build_info.py" <<EOF
+FIRMWARE_VERSION = "$version"
+BUILD_TYPE = "$([[ $debug -eq 1 ]] && echo debug || echo release)"
+DEBUG = $([[ $debug -eq 1 ]] && echo True || echo False)
+EOF
+
+  if [[ $local_build -eq 1 ]]; then
+    FW_BUILD_DIR="$REPO_ROOT/build/mp-build-local$suffix"
+    FW_MPY_CROSS_BUILD_DIR="$FW_MICROPYTHON/mpy-cross/build-local$suffix"
     FW_OUT="$FW_BUILD_DIR/firmware.uf2"
     mkdir -p "$FW_BUILD_DIR"
-    info "Building custom firmware locally"
+    info "Building $([[ $debug -eq 1 ]] && echo debug || echo release) firmware locally"
     command -v arm-none-eabi-gcc >/dev/null 2>&1 && command -v cmake >/dev/null 2>&1 ||
       die "arm-none-eabi-gcc and cmake are required for --local -> ./tools/pico fw-doctor"
     make -C "$FW_MICROPYTHON/mpy-cross" BUILD="$FW_MPY_CROSS_BUILD_DIR" ||
@@ -343,19 +365,19 @@ cmd_fw_build() {
       BUILD="$FW_BUILD_DIR" "$@" ||
       die "firmware build failed"
   else
-    FW_BUILD_DIR="$REPO_ROOT/build/mp-build-docker"
-    FW_MPY_CROSS_BUILD_DIR="$FW_MICROPYTHON/mpy-cross/build-docker"
+    FW_BUILD_DIR="$REPO_ROOT/build/mp-build-docker$suffix"
+    FW_MPY_CROSS_BUILD_DIR="$FW_MICROPYTHON/mpy-cross/build-docker$suffix"
     FW_OUT="$FW_BUILD_DIR/firmware.uf2"
     mkdir -p "$FW_BUILD_DIR"
     docker image inspect "$FW_DOCKER_IMAGE" >/dev/null 2>&1 ||
       docker build -t "$FW_DOCKER_IMAGE" "$FW_DIR" ||
       die "docker build of $FW_DOCKER_IMAGE failed"
-    info "Building custom firmware in Docker"
+    info "Building $([[ $debug -eq 1 ]] && echo debug || echo release) firmware in Docker"
     docker run --rm -v "$REPO_ROOT:/repo" -w /repo "$FW_DOCKER_IMAGE" sh -c "
-      make -C firmware/vendor/micropython/mpy-cross BUILD=build-docker &&
-      MICROPY_MPYCROSS=/repo/firmware/vendor/micropython/mpy-cross/build-docker/mpy-cross \
+      make -C firmware/vendor/micropython/mpy-cross BUILD=build-docker$suffix &&
+      MICROPY_MPYCROSS=/repo/firmware/vendor/micropython/mpy-cross/build-docker$suffix/mpy-cross \
         make -C firmware/vendor/micropython/ports/rp2 BOARD=RPI_PICO \
-        FROZEN_MANIFEST=/repo/firmware/manifest.py BUILD=/repo/build/mp-build-docker
+        FROZEN_MANIFEST=/repo/firmware/manifest.py BUILD=/repo/build/mp-build-docker$suffix
     " || die "docker-based firmware build failed"
   fi
 
@@ -369,9 +391,21 @@ cmd_fw_build() {
 # littlefs packing here at all; that's what makes the guarantee unconditional
 # rather than something a future change could quietly break.
 cmd_release() {
-  if [[ "${1:-}" == "--local" ]]; then
+  local debug=0
+  local local_build=0
+  while [[ $# -gt 0 && "$1" == --* ]]; do
+    case "$1" in
+      --debug) debug=1 ;;
+      --local) local_build=1 ;;
+      *) break ;;
+    esac
     shift
-    cmd_fw_build --local
+  done
+  local build_args=()
+  [[ $debug -eq 1 ]] && build_args+=(--debug)
+  [[ $local_build -eq 1 ]] && build_args+=(--local)
+  if [[ ${#build_args[@]} -gt 0 ]]; then
+    cmd_fw_build "${build_args[@]}"
   else
     cmd_fw_build
   fi
@@ -384,9 +418,9 @@ cmd_release() {
     local version
     version="$("$PY" -c "
 import re
-print(re.search(r'CURRENT_FIRMWARE_VERSION\s*=\s*[\"\x27]([^\"\x27]+)', open('$REPO_ROOT/src/main.py').read()).group(1))
+print(re.search(r'FIRMWARE_VERSION\s*=\s*[\"\x27]([^\"\x27]+)', open('$REPO_ROOT/src/build_info.py').read()).group(1))
 " 2>/dev/null || echo dev)"
-    out="$REPO_ROOT/build/robox-$version.uf2"
+    out="$REPO_ROOT/build/robox-$version$([[ $debug -eq 1 ]] && echo -debug).uf2"
   fi
 
   mkdir -p "$(dirname "$out")"
@@ -502,13 +536,23 @@ cmd_reflash() {
 # to latest.uf2 at the repo root (same convention `reflash` alone uses) so
 # a bare `./tools/pico deploy` always does the right thing.
 cmd_deploy() {
-  local local_flag=()
-  if [[ "${1:-}" == "--local" ]]; then
-    local_flag=(--local)
+  local build_flags=()
+  local debug_build=0
+  while [[ $# -gt 0 && "$1" == --* ]]; do
+    case "$1" in
+      --local) build_flags+=("$1") ;;
+      --debug)
+        build_flags+=("$1")
+        debug_build=1
+        ;;
+      *) break ;;
+    esac
     shift
-  fi
-  local out="${1:-$REPO_ROOT/latest.uf2}"
-  cmd_release "${local_flag[@]+"${local_flag[@]}"}" "$out"
+  done
+  local default_out="$REPO_ROOT/latest.uf2"
+  [[ $debug_build -eq 1 ]] && default_out="$REPO_ROOT/latest-debug.uf2"
+  local out="${1:-$default_out}"
+  cmd_release "${build_flags[@]+"${build_flags[@]}"}" "$out"
   cmd_reflash "$out"
 }
 
@@ -631,15 +675,15 @@ tools/pico -- Thonny-replacement CLI for the Robox Pico firmware.
   pico reset                  hard reset (machine.reset())
 
   pico fw-doctor              check the firmware cross-compile toolchain
-  pico fw-build [--local]     compile custom firmware (frozen main.py + core
+  pico fw-build [--local] [--debug] compile custom firmware (frozen main.py + core
                               libs) via Docker (default) or a local ARM toolchain
-  pico release [out.uf2]     fw-build, then THE file to distribute -- same
+  pico release [--local] [--debug] [out.uf2] fw-build, then THE file to distribute -- same
                               artifact for a blank board or an existing one.
                               Frozen main.py runs regardless of the
                               filesystem, and this carries zero filesystem
                               blocks, so config.json/program.py always
                               survive.
-  pico deploy [out.uf2]      release + reflash in one step
+  pico deploy [--local] [--debug] [out.uf2] release + reflash in one step
   pico inspect <file.uf2>     list the files packed inside a UF2
 
   pico bootsel                reboot into BOOTSEL / mass-storage mode
