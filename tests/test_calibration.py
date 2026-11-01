@@ -9,7 +9,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-import calibration as c  # noqa: E402
+from colors import calibration as c  # noqa: E402
 
 
 class TestNormalise(unittest.TestCase):

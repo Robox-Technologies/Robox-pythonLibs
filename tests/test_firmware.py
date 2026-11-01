@@ -5,6 +5,7 @@ loop. Run with: ./tools/run-tests
 """
 
 import json
+import importlib
 import os
 import sys
 import tempfile
@@ -17,7 +18,7 @@ SRC = os.path.join(os.path.dirname(__file__), "..", "src")
 sys.path.insert(0, SRC)
 
 import protocol as p  # noqa: E402
-import calibration as _cal  # noqa: E402
+from colors import calibration as _cal  # noqa: E402
 from colors import STANDARD_COLORS, closest_color_name  # noqa: E402
 
 
@@ -118,7 +119,9 @@ def load_firmware(color_sensor_cls=RaisingColorSensor):
 
     roboxlib.DEFAULT_BLE_NAME = "Robox"
     roboxlib.ble_name_state = [roboxlib.DEFAULT_BLE_NAME]
-    roboxlib.ble_configured_state = [False]
+    # Firmware startup must not enter the real module-provisioning retry loop
+    # for every test. Provisioning tests opt back into the unconfigured state.
+    roboxlib.ble_configured_state = [True]
 
     def load_ble_name():
         return roboxlib.ble_name_state[0]
@@ -193,9 +196,25 @@ def load_firmware(color_sensor_cls=RaisingColorSensor):
 
     try:
         import communication
+        bluetooth_module = importlib.import_module("communication.bluetooth")
+        queue_module = importlib.import_module("communication.queue")
+        usb_module = importlib.import_module("communication.usb")
+        queue_module.outgoing_messages.clear()
+        queue_module.debug_messages.clear()
+        queue_module.dropped_message_count = 0
+        queue_module.unreported_drops.clear()
 
-        source = open(os.path.join(SRC, "main.py")).read()
-        body = source.split("# ----------------------\n# Main loop")[0]
+        # Keep the fixture's old convenience handles while tests migrate to
+        # the split communication modules.
+        communication.bluetooth = bluetooth_module
+        communication.queue = queue_module
+        communication.time = queue_module.time
+        communication.sys = usb_module.sys
+        communication.outgoing_messages = queue_module.outgoing_messages
+
+        with open(os.path.join(SRC, "app", "runtime.py")) as source_file:
+            source = source_file.read()
+        body = source.split("\nensure_ble_configured()\n", 1)[0]
 
         ns = {"__name__": "__main__"}
         exec(compile(body, "main.py", "exec"), ns)
@@ -380,7 +399,7 @@ class TestProvisioning(unittest.TestCase):
     def test_configure_reports_what_the_module_refused(self):
         ns = load_firmware()
         ble, comms = ns["ble"], ns["communication"]
-        comms.time.sleep = lambda _seconds: None
+        comms.bluetooth.time.sleep = lambda _seconds: None
 
         # This module answers ERROR to plenty of commands, and a refusal is
         # otherwise indistinguishable from a setting that took.
@@ -409,7 +428,7 @@ class TestProvisioning(unittest.TestCase):
     def test_configure_passes_when_the_module_takes_everything(self):
         ns = load_firmware()
         ble, comms = ns["ble"], ns["communication"]
-        comms.time.sleep = lambda _seconds: None
+        comms.bluetooth.time.sleep = lambda _seconds: None
 
         def answer(data):
             ble.uart.written.append(data)
@@ -429,7 +448,7 @@ class TestRenameMethod(unittest.TestCase):
     def test_rename_only_touches_name_and_reset(self):
         ns = load_firmware()
         ble, comms = ns["ble"], ns["communication"]
-        comms.time.sleep = lambda _seconds: None
+        comms.bluetooth.time.sleep = lambda _seconds: None
 
         def answer(data):
             ble.uart.written.append(data)
@@ -446,7 +465,7 @@ class TestRenameMethod(unittest.TestCase):
     def test_rename_reports_what_the_module_refused(self):
         ns = load_firmware()
         ble, comms = ns["ble"], ns["communication"]
-        comms.time.sleep = lambda _seconds: None
+        comms.bluetooth.time.sleep = lambda _seconds: None
 
         def answer(data):
             ble.uart.written.append(data)
@@ -469,7 +488,8 @@ class TestSelfConfiguring(unittest.TestCase):
     def test_configures_once_when_never_configured(self):
         ns = load_firmware()
         ble, comms, roboxlib = ns["ble"], ns["communication"], ns["roboxlib"]
-        comms.time.sleep = lambda _seconds: None
+        roboxlib.ble_configured_state[0] = False
+        comms.bluetooth.time.sleep = lambda _seconds: None
 
         def answer(data):
             ble.uart.written.append(data)
@@ -502,7 +522,8 @@ class TestSelfConfiguring(unittest.TestCase):
     def test_leaves_the_flag_unset_when_the_module_refuses(self):
         ns = load_firmware()
         ble, comms, roboxlib = ns["ble"], ns["communication"], ns["roboxlib"]
-        comms.time.sleep = lambda _seconds: None
+        roboxlib.ble_configured_state[0] = False
+        comms.bluetooth.time.sleep = lambda _seconds: None
 
         def answer(data):
             ble.uart.written.append(data)
@@ -518,7 +539,7 @@ class TestRenameDevice(unittest.TestCase):
     def test_rename_reprovisions_the_module_and_persists_the_name(self):
         ns = load_firmware()
         ble, comms, roboxlib = ns["ble"], ns["communication"], ns["roboxlib"]
-        comms.time.sleep = lambda _seconds: None
+        comms.bluetooth.time.sleep = lambda _seconds: None
 
         drain(ns)
 
@@ -552,7 +573,7 @@ class TestRenameDevice(unittest.TestCase):
     def test_rename_reports_an_error_when_the_module_refuses(self):
         ns = load_firmware()
         ble, comms, roboxlib = ns["ble"], ns["communication"], ns["roboxlib"]
-        comms.time.sleep = lambda _seconds: None
+        comms.bluetooth.time.sleep = lambda _seconds: None
         drain(ns)
 
         def answer(data):
@@ -1236,7 +1257,7 @@ class TestOutgoingLoss(unittest.TestCase):
             [r["message"] for r in replies(usb) if r["type"] == "console"],
             [str(number) for number in range(1, 101)],
         )
-        self.assertEqual(comms.dropped_message_count, 0)
+        self.assertEqual(comms.queue.dropped_message_count, 0)
 
     def test_the_draining_thread_never_waits_for_room(self):
         """The main loop cannot wait on a queue only it can empty."""
@@ -1266,7 +1287,7 @@ class TestOutgoingLoss(unittest.TestCase):
         drain(ns)
 
         sent = [r["message"] for r in replies(usb) if r["type"] == "console"]
-        self.assertEqual(sent[0], comms.DROP_NOTICE % overrun)
+        self.assertEqual(sent[0], comms.queue.DROP_NOTICE % overrun)
         self.assertEqual(
             sent[1:],
             [

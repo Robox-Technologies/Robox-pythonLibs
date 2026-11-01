@@ -49,7 +49,6 @@ from protocol import (
 PROTOCOL_VERSION = 2
 
 PROGRAM_FILENAME = "program.py"
-
 MAX_LINES_PER_POLL = 128
 
 COLOR_MODE_INTERVAL_MS = 250
@@ -316,7 +315,7 @@ def dispatch_command(comm, command):
             comm.write_message("error", "Could not rename device")
 
     elif command == "reset_device":
-        log("command", "reset_device", level=1)
+        log("command", "reset_device", level=1, force_flush=True)
         machine.reset()
 
     elif command == "boot_loader":

@@ -9,7 +9,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-import matrix as m  # noqa: E402
+from colors import matrix as m  # noqa: E402
 
 
 class TestTranspose(unittest.TestCase):

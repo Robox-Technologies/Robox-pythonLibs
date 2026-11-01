@@ -31,7 +31,26 @@ def main(argv=None):
     print("monitoring %s over USB (Ctrl-C to stop)" % transport.port_name)
     try:
         while True:
-            chunk = transport.read_available()
+            try:
+                chunk = transport.read_available()
+            except (OSError, TransportError):
+                transport.close()
+                partial = b""
+                print(
+                    "\nboard disconnected; waiting for %s to reconnect..."
+                    % transport.port_name,
+                    flush=True,
+                )
+                while True:
+                    try:
+                        transport.open()
+                        reader = protocol.FrameReader()
+                        print("board reconnected", flush=True)
+                        break
+                    except TransportError:
+                        time.sleep(0.25)
+                continue
+
             if not chunk:
                 time.sleep(0.05)
                 continue
@@ -48,11 +67,8 @@ def main(argv=None):
                         continue
                     if message.get("type") == "debug":
                         print(message.get("message", ""), flush=True)
-    except (KeyboardInterrupt, OSError) as exc:
-        if isinstance(exc, OSError):
-            print("\nmonitor disconnected during board reset")
-        else:
-            print("\nmonitor stopped")
+    except KeyboardInterrupt:
+        print("\nmonitor stopped")
     finally:
         transport.close()
     return 0

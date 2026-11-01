@@ -195,6 +195,10 @@ Use `board monitor` when the website is connected over Bluetooth. When the
 website owns the USB port, retrieve the detailed communication history with
 `board debug-log` after disconnecting it.
 
+The monitor stays running across a Pico reset. If the USB serial device
+temporarily disappears, it waits for the same port to reappear and resumes
+automatically. Press `Ctrl-C` to stop the monitor.
+
 ### `board debug-log`
 
 Download the detailed log from the most recent boot-to-reset run.

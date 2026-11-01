@@ -18,6 +18,8 @@ typings/
 build/*
 !build/.gitkeep
 
+*.log
+*.uf2
 # The user program that main.py writes to flash at runtime; not source.
 /program.py
 

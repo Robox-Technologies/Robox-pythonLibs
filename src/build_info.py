@@ -1,3 +1,3 @@
-FIRMWARE_VERSION = "2.1.0"
+FIRMWARE_VERSION = "2.5.0"
 BUILD_TYPE = "release"
 DEBUG = False

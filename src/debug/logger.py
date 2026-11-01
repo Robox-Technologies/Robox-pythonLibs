@@ -6,13 +6,16 @@ from build_info import DEBUG
 
 LOG_FILE = "debug.log"
 MAX_LOG_BYTES = 64 * 1024
+LOG_FLUSH_INTERVAL_MS = 250
 LIVE_LEVEL = 1
 MAX_LIVE_DETAILS = 160
+LIVE_CATEGORIES = {"boot", "command", "hardware", "program", "upload"}
 
 _file = None
 _live_comm = None
 _size = 0
 _disabled = False
+_last_flush = 0
 
 
 def _now():
@@ -21,7 +24,7 @@ def _now():
 
 
 def configure(live_comm=None):
-    global _file, _live_comm, _size, _disabled
+    global _file, _live_comm, _size, _disabled, _last_flush
     if not DEBUG:
         return
     if live_comm is not None:
@@ -31,6 +34,7 @@ def configure(live_comm=None):
     try:
         _file = open(LOG_FILE, "w")
         _size = 0
+        _last_flush = _now()
         _disabled = False
     except Exception:
         _file = None
@@ -43,8 +47,8 @@ def _format(category, event, details):
     return " ".join(values)
 
 
-def log(category, event, level=0, **details):
-    global _size, _disabled, _live_comm
+def log(category, event, level=0, force_flush=False, **details):
+    global _size, _disabled, _live_comm, _last_flush
     if not DEBUG or _disabled:
         return
 
@@ -55,8 +59,11 @@ def log(category, event, level=0, **details):
         if len(encoded) <= remaining:
             try:
                 _file.write(line)
-                _file.flush()
                 _size += len(encoded)
+                now = _now()
+                if force_flush or now - _last_flush >= LOG_FLUSH_INTERVAL_MS:
+                    _file.flush()
+                    _last_flush = now
             except Exception:
                 _disabled = True
         elif _size < MAX_LOG_BYTES:
@@ -72,7 +79,12 @@ def log(category, event, level=0, **details):
         and event == "tx"
         and details.get("message") == "debug"
     )
-    if level >= LIVE_LEVEL and _live_comm is not None and not is_debug_message:
+    if (
+        level >= LIVE_LEVEL
+        and category in LIVE_CATEGORIES
+        and _live_comm is not None
+        and not is_debug_message
+    ):
         live_details = _format(category, event, details)
         if len(live_details) > MAX_LIVE_DETAILS:
             live_details = live_details[:MAX_LIVE_DETAILS] + "..."
