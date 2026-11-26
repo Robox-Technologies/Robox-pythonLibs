@@ -76,6 +76,21 @@ class BluetoothCommunication(CommunicationInterface):
 
         return None
 
+    def read_raw(self):
+        """Whatever bytes are waiting, untouched (no \\r rewriting)."""
+        try:
+            if self.uart.any():
+                return self.uart.read()
+        except Exception:
+            pass
+        return None
+
+    def unread(self, data):
+        self.buffer = bytes(data) + self.buffer
+
+    def discard_input(self):
+        self.buffer = b""
+
     def can_send_now(self):
         return time.ticks_diff(time.ticks_ms(), self.next_send_time) >= 0
 

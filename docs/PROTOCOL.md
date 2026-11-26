@@ -231,6 +231,55 @@ and refuses to upload to anything below 2.0.0, telling the user to update.
 Keeping a fallback would have meant keeping the code that corrupted programs,
 and a client that silently downgrades to it is the worst of both.
 
+## Controller mode
+
+A second, much smaller wire format for driving the robot live from the
+website's `/controller` page. The contract lives in the website repo
+(`docs/controller-mode.md`); this is the firmware's side of it. Added in 2.6.0.
+
+**Entering.** A framed `X` command `controller_mode`. If a program is running
+the board answers with a normal `error` reply and stays framed. Otherwise
+`dispatch_command` only records the request; the main loop acts on it once
+the command's `poll()` has finished, so the ACK for the command frame is sent
+*before* the reply, not after it. `enter_controller` then sends everything
+still queued, sends the reply `{"type": "controller_mode", "message": "ready"}`
+(the board's last framed message), and runs `controller.run`, which blocks.
+
+**Packets.** 6 bytes, host to board only: `A5 type seq a b crc8`, CRC-8/SMBUS
+(poly 0x07, init 0) over `type..b`. `DRIVE` (0x01) carries left/right as int8,
+clamped to ±100 and passed to `Motors.run_motors`, so bias, reverse and swap
+still apply. `EXIT` (0x04) ends the mode. Any other type with a valid CRC is
+ignored but still counts as a heartbeat.
+
+**Receiving.** `controller.PacketParser` treats input as a byte stream: scan
+for `A5`, wait for 6 bytes, and on a CRC failure drop *one* byte so a real
+packet starting inside the bad one survives. Only the newest DRIVE from each
+read reaches the motors. The loop reads with `read_raw()`, not `read_line()`:
+BLE's line reader rewrites `\r`, and USB's is text-mode, and either would
+corrupt packet bytes.
+
+**Leaving.** EXIT, or 500 ms without a valid packet. Framed bytes don't count.
+The motors are stopped in a `finally`, so an exception leaves them stopped as
+well. Bytes after an EXIT go back to the interface with `unread()` so a framed
+command right behind it is still answered. The board sends nothing on the way
+out.
+
+**Silence.** Nothing may go out while the mode runs. Live debug lines are
+paused (`debug.pause_live`) and the other interface isn't polled. On USB,
+`micropython.kbd_intr(-1)` is set for the duration: `0x03` is an ordinary
+packet byte here, and would otherwise raise `KeyboardInterrupt` in the main
+loop. `./tools/robox board stop` therefore doesn't work while a controller is
+driving over USB, but the mode times out on its own within 500 ms once the
+page stops sending.
+
+**Vectors.** `tests/vectors/controller.json` belongs to the website
+(`src/features/controller/__tests__/vectors/controller.json`) and is copied
+here verbatim. Copy it again after any change there:
+
+```bash
+cp ../NewRoboxWebsite/src/features/controller/__tests__/vectors/controller.json tests/vectors/controller.json
+```
+
 ## Running the tests
 
 ```bash

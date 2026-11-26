@@ -31,6 +31,7 @@ COMMAND_NAMES = (
     "reset_color_black",
     "reset_color_white",
     "color_mode",
+    "controller_mode",
     "reset_device",
     "boot_loader",
     "disconnect_device",

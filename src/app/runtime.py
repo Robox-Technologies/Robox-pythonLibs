@@ -5,7 +5,7 @@ import time
 
 from build_info import BUILD_TYPE, DEBUG, FIRMWARE_VERSION
 from debug import configure as configure_debug
-from debug import log, log_error
+from debug import log, log_error, pause_live
 
 configure_debug()
 log("boot", "started", level=1, version=FIRMWARE_VERSION, build=BUILD_TYPE)
@@ -34,10 +34,13 @@ from communication import (
     USBCommunication,
     BluetoothCommunication,
     flush_outgoing_messages,
+    queued_message_count,
 )
 from framed import FRAME_PREFIX, FramedSession
+import controller
 from protocol import (
     CALIBRATE_MOTORS_PREFIX,
+    FrameReader,
     GET_CALIBRATION_PREFIX,
     RENAME_DEVICE_PREFIX,
     VERIFY_PROGRAM_PREFIX,
@@ -54,6 +57,10 @@ MAX_LINES_PER_POLL = 128
 COLOR_MODE_INTERVAL_MS = 250
 
 TEST_MOTOR_SPEED = 70
+
+# How long entering controller mode may wait for queued replies to go out
+# before its own reply, which has to be the last framed message.
+CONTROLLER_DRAIN_MS = 1000
 
 LED = machine.Pin(25, machine.Pin.OUT)
 LED.on()
@@ -107,6 +114,10 @@ color_mode_comm = None
 last_color_send = 0
 
 framed_sessions = {}
+
+# Set by the controller_mode command; the main loop enters the mode once the
+# command's poll (and its ACK) is finished.
+controller_request = None
 
 
 def framed_session(comm):
@@ -179,7 +190,7 @@ CALIBRATION_GETTERS = {
 def dispatch_command(comm, command):
     """Act on a control command. Only ever reached from a COMMAND frame."""
     global current_communication_method, program_running
-    global color_mode_comm, last_color_send
+    global color_mode_comm, last_color_send, controller_request
 
     if command != "color_mode":
         color_mode_comm = None
@@ -305,6 +316,13 @@ def dispatch_command(comm, command):
                 time.ticks_ms(), -COLOR_MODE_INTERVAL_MS
             )
 
+    elif command == "controller_mode":
+        log("command", "controller_mode", level=1)
+        if program_running:
+            comm.write_message("error", "A program is running")
+        else:
+            controller_request = comm
+
     elif command.startswith(RENAME_DEVICE_PREFIX):
         new_name = parse_device_name(command)
         assert new_name is not None
@@ -345,8 +363,13 @@ def handle_line(comm, line):
 
 def poll(comm):
     """Read and act on everything one interface has buffered."""
-    lines = comm.read_lines(MAX_LINES_PER_POLL)
-    for line in lines:
+    for _ in range(MAX_LINES_PER_POLL):
+        if controller_request is not None:
+            # Everything after the request belongs to controller mode.
+            return
+        line = comm.read_line()
+        if not line:
+            return
         session = framed_session(comm)
         try:
             handle_line(comm, line)
@@ -355,6 +378,60 @@ def poll(comm):
         finally:
             if session is not None:
                 session.flush()
+
+
+def _drain_outgoing(timeout_ms):
+    """Send everything queued, BLE pacing included, for up to timeout_ms."""
+    deadline = time.ticks_add(time.ticks_ms(), timeout_ms)
+    while queued_message_count():
+        if time.ticks_diff(time.ticks_ms(), deadline) >= 0:
+            log("controller", "drain_timeout", level=1)
+            return
+        if not flush_outgoing_messages():
+            time.sleep_ms(1)
+
+
+def _set_keyboard_interrupt(comm, enabled):
+    """USB only: 0x03 is a valid packet byte, not Ctrl-C, in controller mode."""
+    if comm is not usb:
+        return
+    try:
+        import micropython
+
+        micropython.kbd_intr(3 if enabled else -1)
+    except Exception:
+        pass
+
+
+def enter_controller(comm):
+    """Reply, then run the controller loop until it hands back. Blocking."""
+    global current_communication_method
+
+    current_communication_method = comm
+    _drain_outgoing(CONTROLLER_DRAIN_MS)
+
+    # From here the link must stay silent until the mode ends.
+    pause_live(True)
+    comm.discard_input()
+    reason = "error"
+    stats = {}
+    try:
+        comm._write_message_now("controller_mode", "ready")
+        _set_keyboard_interrupt(comm, False)
+        reason, stats = controller.run(
+            comm, motors, time.ticks_ms, time.ticks_diff, time.sleep_ms
+        )
+    except Exception as error:
+        motors.stop_motors()
+        log_error("controller", error)
+    finally:
+        _set_keyboard_interrupt(comm, True)
+        session = framed_sessions.get(comm)
+        if session is not None:
+            session.reader = FrameReader()
+        pause_live(False)
+
+    log("controller", "exited", level=1, reason=reason, **stats)
 
 
 def send_color_if_due():
@@ -390,6 +467,12 @@ while True:
 
         for comm in communications:
             poll(comm)
+            if controller_request is not None:
+                break
+
+        if controller_request is not None:
+            comm, controller_request = controller_request, None
+            enter_controller(comm)
 
         send_color_if_due()
     except Exception as error:

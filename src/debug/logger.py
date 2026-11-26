@@ -9,13 +9,14 @@ MAX_LOG_BYTES = 64 * 1024
 LOG_FLUSH_INTERVAL_MS = 250
 LIVE_LEVEL = 1
 MAX_LIVE_DETAILS = 160
-LIVE_CATEGORIES = {"boot", "command", "hardware", "program", "upload"}
+LIVE_CATEGORIES = {"boot", "command", "controller", "hardware", "program", "upload"}
 
 _file = None
 _live_comm = None
 _size = 0
 _disabled = False
 _last_flush = 0
+_live_paused = False
 
 
 def _now():
@@ -39,6 +40,13 @@ def configure(live_comm=None):
     except Exception:
         _file = None
         _disabled = True
+
+
+def pause_live(paused=True):
+    """Stop (or restart) queueing live debug lines, e.g. in controller mode,
+    where the link must stay silent. The log file is unaffected."""
+    global _live_paused
+    _live_paused = paused
 
 
 def _format(category, event, details):
@@ -83,6 +91,7 @@ def log(category, event, level=0, force_flush=False, **details):
         level >= LIVE_LEVEL
         and category in LIVE_CATEGORIES
         and _live_comm is not None
+        and not _live_paused
         and not is_debug_message
     ):
         live_details = _format(category, event, details)
