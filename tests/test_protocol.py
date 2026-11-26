@@ -15,6 +15,13 @@ import protocol as p  # noqa: E402
 
 
 class TestChecksums(unittest.TestCase):
+    def test_program_verification_command_requires_eight_hex_digits(self):
+        command = "verify_program_%08x" % 0x1234ABCD
+        self.assertEqual(p.parse_program_checksum(command), 0x1234ABCD)
+        self.assertTrue(p.is_command_name(command))
+        self.assertIsNone(p.parse_program_checksum("verify_program_1234"))
+        self.assertFalse(p.is_command_name("verify_program_not-a-crc"))
+
     def test_frame_checksum_covers_header(self):
         """A corrupted seq or kind must change the checksum."""
         base = p.frame_checksum(0, p.KIND_DATA, b"hello")
@@ -146,6 +153,75 @@ class TestEncoding(unittest.TestCase):
         self.assertEqual(p.parse_flow(decoded[0].payload), (0x2B, 2048))
 
 
+class TestMotorCalibrationCommand(unittest.TestCase):
+    """calibrate_motors_<x> is parameterised, unlike the fixed COMMAND_NAMES
+    entries, so it needs its own whitelist logic rather than a literal
+    membership check."""
+
+    def test_parses_negative_zero_and_positive_bias(self):
+        self.assertEqual(p.parse_motor_calibration("calibrate_motors_-0.4"), -0.4)
+        self.assertEqual(p.parse_motor_calibration("calibrate_motors_0"), 0.0)
+        self.assertEqual(p.parse_motor_calibration("calibrate_motors_0.99"), 0.99)
+
+    def test_lower_bound_is_inclusive_upper_bound_is_not(self):
+        self.assertEqual(p.parse_motor_calibration("calibrate_motors_-1"), -1.0)
+        self.assertIsNone(p.parse_motor_calibration("calibrate_motors_1"))
+
+    def test_out_of_range_is_rejected(self):
+        self.assertIsNone(p.parse_motor_calibration("calibrate_motors_-1.01"))
+        self.assertIsNone(p.parse_motor_calibration("calibrate_motors_2"))
+
+    def test_unparseable_or_unrelated_names_are_rejected(self):
+        self.assertIsNone(p.parse_motor_calibration("calibrate_motors_nope"))
+        self.assertIsNone(p.parse_motor_calibration("calibrate_motors_"))
+        self.assertIsNone(p.parse_motor_calibration("firmware_check"))
+        self.assertIsNone(p.parse_motor_calibration("calibrate_motors_nan"))
+        self.assertIsNone(p.parse_motor_calibration("calibrate_motors_inf"))
+
+    def test_is_command_name_accepts_fixed_names_and_valid_bias(self):
+        self.assertTrue(p.is_command_name("firmware_check"))
+        self.assertTrue(p.is_command_name("calibrate_motors_-0.2"))
+        self.assertFalse(p.is_command_name("calibrate_motors_5"))
+        self.assertFalse(p.is_command_name("not_a_command"))
+
+
+class TestRenameDeviceCommand(unittest.TestCase):
+    """rename_device_<name> is parameterised like calibrate_motors_<x>, but
+    its value is sent verbatim into an AT+NAME<name> command against the
+    AT09, so the charset has to be restricted to what cannot be mistaken for
+    another AT command or its \\r\\n terminator."""
+
+    def test_parses_a_valid_name(self):
+        self.assertEqual(p.parse_device_name("rename_device_MyRobot"), "MyRobot")
+        self.assertEqual(p.parse_device_name("rename_device_r2-d2"), "r2-d2")
+        self.assertEqual(p.parse_device_name("rename_device_a_b"), "a_b")
+
+    def test_rejects_empty_and_oversized_names(self):
+        self.assertIsNone(p.parse_device_name("rename_device_"))
+        self.assertIsNone(
+            p.parse_device_name("rename_device_" + "a" * (p.DEVICE_NAME_MAX_LENGTH + 1))
+        )
+        self.assertEqual(
+            p.parse_device_name("rename_device_" + "a" * p.DEVICE_NAME_MAX_LENGTH),
+            "a" * p.DEVICE_NAME_MAX_LENGTH,
+        )
+
+    def test_rejects_characters_that_could_break_out_of_the_at_command(self):
+        self.assertIsNone(p.parse_device_name("rename_device_bad name"))
+        self.assertIsNone(p.parse_device_name("rename_device_bad\rname"))
+        self.assertIsNone(p.parse_device_name("rename_device_bad;AT+RESET"))
+        self.assertIsNone(p.parse_device_name("rename_device_bad\"name"))
+
+    def test_unrelated_names_are_rejected(self):
+        self.assertIsNone(p.parse_device_name("firmware_check"))
+        self.assertIsNone(p.parse_device_name("calibrate_motors_0"))
+
+    def test_is_command_name_accepts_valid_rename_commands(self):
+        self.assertTrue(p.is_command_name("rename_device_MyRobot"))
+        self.assertFalse(p.is_command_name("rename_device_"))
+        self.assertFalse(p.is_command_name("rename_device_bad name"))
+
+
 class TestFrameReader(unittest.TestCase):
     def setUp(self):
         self.reader = p.FrameReader()
@@ -168,7 +244,7 @@ class TestFrameReader(unittest.TestCase):
 
     def test_corrupt_checksum_is_reported_not_delivered(self):
         frame = bytearray(p.encode_frame(1, p.KIND_DATA, b"payload"))
-        frame[HEADER := p.HEADER_LENGTH] ^= 0xFF  # flip a payload byte
+        frame[p.HEADER_LENGTH] ^= 0xFF  # flip a payload byte
         frames, damage = self.reader.feed(bytes(frame))
         self.assertEqual(frames, [])
         self.assertEqual(damage, 1)

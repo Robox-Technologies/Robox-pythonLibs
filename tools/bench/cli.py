@@ -10,7 +10,9 @@ import datetime
 import json
 import sys
 
-from . import corpus, protocol_shim, report as report_module, runner, transports
+import protocol
+
+from . import corpus, report as report_module, runner, transports
 
 
 def build_parser():
@@ -28,7 +30,6 @@ def build_parser():
         help="split USB writes into BLE-sized chunks and pace them. USB never "
              "drops, so this exercises the pacing loop against real hardware "
              "without testing the backoff path.")
-    parser.add_argument("--ack-timeout", type=float, default=10.0)
     parser.add_argument(
         "--chunk-delay-ms", type=float, default=None,
         help="pin the pause between BLE chunk writes to a fixed value, "
@@ -86,7 +87,7 @@ def main(argv=None):
     pacer = (
         None
         if args.chunk_delay_ms is not None
-        else protocol_shim.new_pacer()
+        else protocol.AdaptivePacer()
     )
 
     for iteration in range(args.repeat):
@@ -103,7 +104,6 @@ def main(argv=None):
                     name,
                     text,
                     port=args.port,
-                    ack_timeout=args.ack_timeout,
                     chunk_delay_ms=args.chunk_delay_ms,
                     pacer=pacer,
                 )

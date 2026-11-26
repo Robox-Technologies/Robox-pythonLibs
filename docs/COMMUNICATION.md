@@ -6,9 +6,9 @@ protocol itself is [PROTOCOL.md](PROTOCOL.md).
 ## The harness
 
 ```bash
-./tools/comm-bench --transport usb --out docs/comm-usb-2.0.0.json
-./tools/comm-bench --transport ble --out docs/ble-adaptive.json
-./tools/comm-bench --corpus tiny          # fast smoke test
+./tools/robox dev benchmark --transport usb --out docs/comm-usb-2.0.0.json
+./tools/robox dev benchmark --transport ble --out docs/ble-adaptive.json
+./tools/robox dev benchmark --corpus tiny          # fast smoke test
 ```
 
 It uploads a fixed, seeded corpus through the *same wire behaviour the website
@@ -64,7 +64,7 @@ Security → Bluetooth — then:
 
 ```bash
 python3 -m pip install --user bleak
-./tools/comm-bench --transport ble --out docs/ble-adaptive.json
+./tools/robox dev benchmark --transport ble --out docs/ble-adaptive.json
 ```
 
 ## Current numbers
@@ -116,11 +116,11 @@ resends more of them. More redundant bytes, less wall clock, better goodput.
 Reproduce with:
 
 ```bash
-./tools/comm-bench --transport ble --out docs/ble-adaptive.json
+./tools/robox dev benchmark --transport ble --out docs/ble-adaptive.json
 ```
 
 ```bash
-./tools/comm-bench --transport ble --chunk-delay-ms 30 --out docs/ble-fixed30.json
+./tools/robox dev benchmark --transport ble --chunk-delay-ms 30 --out docs/ble-fixed30.json
 ```
 
 The report prints a `pacing` line with the **mean** delay, which is the number

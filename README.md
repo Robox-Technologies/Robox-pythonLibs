@@ -17,112 +17,120 @@ Quick start with VS Code:
 
 ```bash
 python3 -m pip install --user -r requirements-dev.txt
-./tools/pico stubs           # MicroPython stubs for IntelliSense -> typings/
-./tools/pico doctor          # check the toolchain
-./tools/pico sync            # upload src/ to the Pico
-./tools/pico repl            # open the MicroPython prompt
+./tools/robox dev stubs      # MicroPython stubs for IntelliSense -> typings/
+./tools/robox dev doctor     # check the host toolchain
+git submodule update --init --recursive firmware/vendor/micropython
+./tools/robox firmware doctor
+./tools/robox firmware deploy
+./tools/robox board repl     # open the MicroPython prompt
 ```
 
-Run `./tools/pico help` for the full command list. The same commands are
+Run `./tools/robox help` for the full command list. The same commands are
 available in VS Code under **Tasks: Run Task**.
 
 ## Layout
 
 ```
-src/main.py            firmware entry point; command loop over USB + Bluetooth
-src/roboxlib.py        motors, ultrasonic, servo, line and colour sensors
-src/communication.py   USB / BLE transports and the outgoing message queue
+src/main.py            minimal firmware entry point
+src/app/               firmware runtime and command loop
+src/roboxlib.py        public hardware API facade
+src/hardware/          motors, sensors, and board configuration
+src/communication/      USB/BLE transports, message formatting, and queue
+src/protocol/          wire framing, sequencing and upload flow control
+src/framed/            framed upload session
+src/colors/             palette matching, calibration, and matrix correction
 src/lib/picozero       vendored dependency
 template_program.py    starting point for a user robot program
-tools/pico             mpremote/picotool wrapper (CLI + backs the VS Code tasks)
-tools/build_uf2.py     builds a release UF2 on the host, no board required
+firmware/manifest.py   what's frozen into the custom-built firmware
+firmware/Dockerfile    pinned ARM cross-compile toolchain
+firmware/vendor/       git submodule: MicroPython + pico-sdk (+ all its own submodules)
+tools/robox            unified board, firmware, development, and test CLI
+tools/build_uf2.py     assembles a UF2 on the host, no board required
 pyrightconfig.json     IntelliSense / type-checking config
 docs/VSCODE.md         editor setup and workflows
+docs/RELEASE.md        the frozen-firmware release process
 ```
 
-Everything under `src/` is uploaded to the Pico's root, so `src/main.py` becomes
-`/main.py` and `src/lib/picozero` becomes `/lib/picozero`.
+Everything under `src/` is frozen into the firmware (see
+[`docs/RELEASE.md`](docs/RELEASE.md)), so `src/main.py` becomes the frozen
+module `main` and so on -- there's no loose copy on the board's filesystem to
+upload or inspect directly.
 
 ## Building the release UF2
 
-A release UF2 is just two things stacked in flash: a stock MicroPython build,
-and a littlefs filesystem holding everything in `src/`. Both are reproducible on
-a laptop, so **no Pico is needed to build one**.
+**main.py, app/, roboxlib.py, communication/, framed/, protocol/, colors/,
+and lib/picozero are frozen into the firmware
+itself** (compiled from source, not the stock micropython.org build), so a
+release UF2 carries **zero filesystem blocks** — it can't touch
+`config.json` or `program.py` on any board it's flashed onto, no matter what
+they contain. A frozen `main.py` autoruns on its own (confirmed on real
+hardware — MicroPython's boot sequence checks the frozen module table
+before the filesystem), so the same artifact works for a brand-new blank
+board and an already-set-up one; there's no separate "factory image" and no
+loose stub file to maintain. See [`docs/RELEASE.md`](docs/RELEASE.md) for
+the full story, including why a real compile is needed rather than reusing
+a stock UF2.
 
 ```bash
-python3 -m pip install --user -r requirements-dev.txt   # littlefs-python
-./tools/pico build                                      # -> build/robox-<version>.uf2
+git submodule update --init --recursive firmware/vendor/micropython
+./tools/robox firmware doctor
+./tools/robox firmware release      # -> build/robox-<version>.uf2
 ```
 
-The first build downloads the pinned MicroPython firmware into
-`build/firmware/` (about 650 KB, cached); after that builds work offline. The
-version is named at the top of [`tools/build_uf2.py`](tools/build_uf2.py) — bump
-it there deliberately, not by accident. In VS Code the same thing is
-**Tasks: Run Task → `UF2: Build release (no board needed)`**.
-
-`build` prints the flash map it used, packs the same files `pico sync` uploads,
-and then re-reads its own artifact — parsing the UF2 back and mounting the
-filesystem inside it — before declaring success:
-
-```
-==> Base firmware build/firmware/RPI_PICO-20241129-v1.24.1.uf2
-   map   filesystem 0x100a0000..0x10200000 (1408 KiB), read from the firmware
-   add   main.py                                    6791 B
-   fw    0x10000000..0x10051600  (325 KiB, 1302 block(s))
-  ok wrote build/robox-2.0.1.uf2 (3.4 MiB, 6934 blocks)
-  ok verified: 7 file(s) mount cleanly from the UF2
-```
-
-Two builds of the same tree are byte-identical, so a release can be diffed and
-rebuilt in CI.
-
-Useful variants:
+The version is named at the top of [`src/main.py`](src/main.py)
+(`CURRENT_FIRMWARE_VERSION`) — bump it there deliberately, not by accident.
+`release` compiles via Docker by default (`firmware/Dockerfile`, so a build
+doesn't depend on whatever's on a dev's PATH); pass `--local` to use
+`arm-none-eabi-gcc`/`cmake` off PATH instead.
 
 ```bash
-./tools/pico build --offline                  # never download; fail if not cached
-./tools/pico firmware 1.26.1                  # cache a different MicroPython
-ROBOX_BASE_UF2=old-dump.uf2 ./tools/pico build # base it on a board dump
-./tools/pico build --no-base --sparse libs.uf2 # just src/, keep the board's firmware
-./tools/pico inspect build/robox-2.0.1.uf2     # list what a UF2 actually contains
+./tools/robox firmware inspect build/robox-<version>.uf2
+./tools/build_uf2.py verify-release build/robox-<version>.uf2  # zero-FS-blocks check (release already runs this)
 ```
 
-To flash, hold BOOTSEL while plugging the board in, then either drag the UF2
-onto the `RPI-RP2` volume or:
+Flashing is unchanged — hold BOOTSEL while plugging the board in, then either
+drag the UF2 onto the `RPI-RP2` volume or:
 
 ```bash
-./tools/pico flash build/robox-2.0.1.uf2
+./tools/robox firmware flash build/robox-<version>.uf2
 ```
+
+### Provisioning a brand-new board
+
+The same `release` build works here too — a blank Pico's filesystem region
+is unformatted, and MicroPython's own boot code formats it fresh on first
+mount, same as it always has. There's no separate command for this.
 
 ### Capturing a UF2 off a board
 
-The way to snapshot a board that is already set up — a dump also captures
-`program.py` and any calibration data, which a clean build leaves out. Needs
-[`picotool`](https://github.com/raspberrypi/picotool) and the board in BOOTSEL
-mode — the task is **`UF2: Capture from board (sync -> BOOTSEL -> save)`**, or:
+Still supported, and still the way to snapshot a board that is already set up
+(it captures `program.py` and any calibration data exactly as they are on that
+board). Needs [`picotool`](https://github.com/raspberrypi/picotool) and the
+board in BOOTSEL mode — the task is **`UF2: Capture from board`**, or:
 
 ```bash
-./tools/pico sync        # upload src/ to flash
-./tools/pico bootsel     # reboot into BOOTSEL, no button press needed
-./tools/pico uf2         # -> build/robox-<timestamp>.uf2
+./tools/robox firmware bootsel
+./tools/robox firmware save         # -> build/robox-<timestamp>.uf2
 ```
 
-To do it by hand: transfer `src/` with [Thonny](https://thonny.org) or
-`./tools/pico sync`, unplug the Pico and plug it back in while holding BOOTSEL
+To do it by hand: unplug the Pico and plug it back in while holding BOOTSEL
 (a removable volume named `RPI-RP2` or `NO NAME` appears), then
 
 ```bash
 picotool save -a <DESTINATION_PATH> -t uf2
 ```
 
-which dumps the entire flash. Such a dump also works as a base for
-`./tools/pico build`: the builder keeps its firmware half and replaces the
-filesystem half with a freshly built one.
+which dumps the entire flash. Such a dump also works as a `--base` for
+`tools/build_uf2.py build` directly (it keeps the firmware half and replaces
+the filesystem half with a freshly built one) — `pico release`/`build`/
+`factory` don't use this at all (they ship the compiled firmware as-is, no
+filesystem image involved), so use `build_uf2.py` directly if you need this.
 
 ### Other boards
 
-The flash map above is the 2 MB Pico's. `build` reads the filesystem window out
-of the base firmware's own binary-info block (via `picotool`, when installed),
-so a firmware for a differently laid out board comes out right by itself. If
-`picotool` is missing it falls back to the RPI_PICO numbers, which
-`--fs-base`/`--fs-size` override; `./tools/pico fs-layout` prints the real
-numbers from a connected board.
+The flash map above is the 2 MB Pico's. `build_uf2.py build` reads the
+filesystem window out of the base firmware's own binary-info block (via
+`picotool`, when installed), so a firmware for a differently laid out board
+comes out right by itself. If `picotool` is missing it falls back to the
+RPI_PICO numbers, which `--fs-base`/`--fs-size` override; `./tools/robox
+fs-layout` prints the real numbers from a connected board.

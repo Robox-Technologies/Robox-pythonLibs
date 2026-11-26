@@ -37,7 +37,7 @@ def fake_base_uf2(path, size=4096):
 
 
 class ExcludeTest(unittest.TestCase):
-    """The builder has to skip exactly what `pico sync` skips."""
+    """--exclude pattern matching for the legacy littlefs-image build path."""
 
     PATTERNS = ["__pycache__", ".DS_Store", "lib/picozero-0.4.2.dist-info"]
 
@@ -214,6 +214,39 @@ class BuildTest(unittest.TestCase):
     def test_default_output_is_named_after_the_firmware_version(self):
         self.assertEqual(b.firmware_version(self.src), "9.9.9")
         self.assertTrue(b.default_out_path(self.src).endswith("robox-9.9.9.uf2"))
+
+
+class VerifyReleaseTest(unittest.TestCase):
+    """The regression test for the whole frozen-firmware migration: a release
+    that carries filesystem blocks would wipe config.json/program.py on every
+    board it lands on, so verify-release must catch one."""
+
+    def setUp(self):
+        import tempfile
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = self._tmp.name
+        self.addCleanup(self._tmp.cleanup)
+
+    def run_verify(self, path):
+        argv = ["verify-release", path, "--fs-base", str(64 * 1024),
+                "--fs-size", str(64 * 1024)]
+        with contextlib.redirect_stdout(io.StringIO()):
+            return b.main(argv)
+
+    def test_firmware_only_uf2_passes(self):
+        path = fake_base_uf2(os.path.join(self.tmp, "release.uf2"), size=4096)
+        self.assertEqual(self.run_verify(path), 0)
+
+    def test_a_block_in_the_filesystem_region_fails(self):
+        base = fake_base_uf2(os.path.join(self.tmp, "base.uf2"), size=4096)
+        blocks, family = b.parse_uf2(base)
+        blocks += b.split_into_blocks(b.XIP_BASE + 64 * 1024, b"\xaa" * 256)
+        path = os.path.join(self.tmp, "with_fs.uf2")
+        with open(path, "wb") as fh:
+            fh.write(b.uf2_bytes(blocks, family))
+        with self.assertRaises(SystemExit):
+            self.run_verify(path)
 
 
 if __name__ == "__main__":

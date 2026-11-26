@@ -5,8 +5,10 @@ loop. Run with: ./tools/run-tests
 """
 
 import json
+import importlib
 import os
 import sys
+import tempfile
 import threading
 import time
 import types
@@ -16,6 +18,8 @@ SRC = os.path.join(os.path.dirname(__file__), "..", "src")
 sys.path.insert(0, SRC)
 
 import protocol as p  # noqa: E402
+from colors import calibration as _cal  # noqa: E402
+from colors import STANDARD_COLORS, closest_color_name  # noqa: E402
 
 
 class FakeUart:
@@ -39,7 +43,14 @@ class FakeUart:
         self.written.append(data)
 
 
-def load_firmware():
+class RaisingColorSensor:
+    """Stands in for a board with no colour sensor wired up."""
+
+    def __init__(self):
+        raise Exception("no sensor attached")
+
+
+def load_firmware(color_sensor_cls=RaisingColorSensor):
     """Run main.py's setup against stubbed hardware and return its namespace."""
     machine = types.ModuleType("machine")
 
@@ -75,12 +86,100 @@ def load_firmware():
     clock.ticks_diff = lambda later, earlier: later - earlier
 
     roboxlib = types.ModuleType("roboxlib")
+    roboxlib.ColorSensor = color_sensor_cls
+    roboxlib.motor_calibrations = []
+    roboxlib.save_motor_calibration = roboxlib.motor_calibrations.append
+    roboxlib.load_motor_calibration = (
+        lambda: roboxlib.motor_calibrations[-1]
+        if roboxlib.motor_calibrations
+        else 0.0
+    )
 
-    class ColorSensor:
+    roboxlib.reverse_state = [False, False]
+
+    def load_motor_reverse(index):
+        return roboxlib.reverse_state[index]
+
+    def save_motor_reverse(index, value):
+        roboxlib.reverse_state[index] = bool(value)
+
+    roboxlib.load_motor_reverse = load_motor_reverse
+    roboxlib.save_motor_reverse = save_motor_reverse
+
+    roboxlib.swap_state = [False]
+
+    def load_motor_swap():
+        return roboxlib.swap_state[0]
+
+    def save_motor_swap(value):
+        roboxlib.swap_state[0] = bool(value)
+
+    roboxlib.load_motor_swap = load_motor_swap
+    roboxlib.save_motor_swap = save_motor_swap
+
+    roboxlib.DEFAULT_BLE_NAME = "Robox"
+    roboxlib.ble_name_state = [roboxlib.DEFAULT_BLE_NAME]
+    # Firmware startup must not enter the real module-provisioning retry loop
+    # for every test. Provisioning tests opt back into the unconfigured state.
+    roboxlib.ble_configured_state = [True]
+
+    def load_ble_name():
+        return roboxlib.ble_name_state[0]
+
+    def save_ble_name(name):
+        roboxlib.ble_name_state[0] = name
+
+    def load_ble_configured():
+        return roboxlib.ble_configured_state[0]
+
+    def save_ble_configured(value):
+        roboxlib.ble_configured_state[0] = bool(value)
+
+    roboxlib.load_ble_name = load_ble_name
+    roboxlib.save_ble_name = save_ble_name
+    roboxlib.load_ble_configured = load_ble_configured
+    roboxlib.save_ble_configured = save_ble_configured
+
+    roboxlib.motor_runs = []
+
+    class FakeMotors:
+        """Stands in for roboxlib.Motors. Records what run_motors was told
+        to do, rather than reapplying the calibration math, since that math
+        is roboxlib's own responsibility and not what dispatch_command tests
+        are checking here. Mirrors the real Motors.__init__ by reading
+        calibration/reverse/swap at construction time, since main.py builds
+        one of these as a module-level singleton and later dispatch code
+        writes straight to its attributes."""
+
         def __init__(self):
-            raise Exception("no sensor attached")
+            self.calibration = roboxlib.load_motor_calibration()
+            self.reverse = [
+                roboxlib.load_motor_reverse(0), roboxlib.load_motor_reverse(1)
+            ]
+            self.swap = roboxlib.load_motor_swap()
 
-    roboxlib.ColorSensor = ColorSensor
+        def run_motors(self, left_speed, right_speed):
+            roboxlib.motor_runs.append((left_speed, right_speed))
+
+        def stop_motors(self):
+            self.run_motors(0, 0)
+
+    roboxlib.Motors = FakeMotors
+
+    def color_calibration_status(sensor):
+        if sensor is None:
+            return {name: False for name in STANDARD_COLORS}
+        status = {}
+        for name in STANDARD_COLORS:
+            if name == "white":
+                status[name] = sensor.calibration["white"] != list(_cal.DEFAULT["white"])
+            elif name == "black":
+                status[name] = sensor.calibration["black"] != list(_cal.DEFAULT["black"])
+            else:
+                status[name] = name in sensor.samples
+        return status
+
+    roboxlib.color_calibration_status = color_calibration_status
 
     saved = {
         name: sys.modules.get(name)
@@ -97,9 +196,25 @@ def load_firmware():
 
     try:
         import communication
+        bluetooth_module = importlib.import_module("communication.bluetooth")
+        queue_module = importlib.import_module("communication.queue")
+        usb_module = importlib.import_module("communication.usb")
+        queue_module.outgoing_messages.clear()
+        queue_module.debug_messages.clear()
+        queue_module.dropped_message_count = 0
+        queue_module.unreported_drops.clear()
 
-        source = open(os.path.join(SRC, "main.py")).read()
-        body = source.split("# ----------------------\n# Main loop")[0]
+        # Keep the fixture's old convenience handles while tests migrate to
+        # the split communication modules.
+        communication.bluetooth = bluetooth_module
+        communication.queue = queue_module
+        communication.time = queue_module.time
+        communication.sys = usb_module.sys
+        communication.outgoing_messages = queue_module.outgoing_messages
+
+        with open(os.path.join(SRC, "app", "runtime.py")) as source_file:
+            source = source_file.read()
+        body = source.split("\nensure_ble_configured()\n", 1)[0]
 
         ns = {"__name__": "__main__"}
         exec(compile(body, "main.py", "exec"), ns)
@@ -112,6 +227,7 @@ def load_firmware():
 
     ns["machine"] = machine
     ns["communication"] = communication
+    ns["roboxlib"] = roboxlib
 
     # Bluetooth already records everything through its FakeUart. USB writes to
     # stdout, so give it somewhere harmless to put its bytes.
@@ -134,11 +250,15 @@ def replies(comm):
     out = []
     reader = p.FrameReader()
     raw = sent_bytes(comm)
+    partial = b""
     for offset in range(0, len(raw), 512):
         frames, _ = reader.feed(raw[offset:offset + 512])
         for frame in frames:
-            if frame.kind == p.KIND_REPLY:
-                out.append(json.loads(frame.text()))
+            if frame.kind == p.KIND_CONTINUE:
+                partial += frame.payload
+            elif frame.kind == p.KIND_REPLY:
+                out.append(json.loads((partial + frame.payload).decode()))
+                partial = b""
     return out
 
 
@@ -279,11 +399,11 @@ class TestProvisioning(unittest.TestCase):
     def test_configure_reports_what_the_module_refused(self):
         ns = load_firmware()
         ble, comms = ns["ble"], ns["communication"]
-        comms.time.sleep = lambda _seconds: None
+        comms.bluetooth.time.sleep = lambda _seconds: None
 
         # This module answers ERROR to plenty of commands, and a refusal is
         # otherwise indistinguishable from a setting that took.
-        refuse = {"AT+CHAR0xffe1"}
+        refuse = {"AT+CHARFFE1"}
 
         def answer(data):
             ble.uart.written.append(data)
@@ -296,8 +416,9 @@ class TestProvisioning(unittest.TestCase):
         self.assertEqual(
             [w.decode().strip() for w in ble.uart.written],
             [
-                "AT+UUID0xffe0",
-                "AT+CHAR0xffe1",
+                "AT",
+                "AT+UUIDFFE0",
+                "AT+CHARFFE1",
                 "AT+NAMERobox20",
                 "AT+RESET",
                 "AT",
@@ -307,7 +428,7 @@ class TestProvisioning(unittest.TestCase):
     def test_configure_passes_when_the_module_takes_everything(self):
         ns = load_firmware()
         ble, comms = ns["ble"], ns["communication"]
-        comms.time.sleep = lambda _seconds: None
+        comms.bluetooth.time.sleep = lambda _seconds: None
 
         def answer(data):
             ble.uart.written.append(data)
@@ -316,6 +437,158 @@ class TestProvisioning(unittest.TestCase):
         ble.uart.write = answer
 
         self.assertTrue(ble.configure("Robox20"))
+
+
+class TestRenameMethod(unittest.TestCase):
+    """BluetoothCommunuication.rename() -- the lightweight path used after
+    the one-time configure(), which never re-sends AT+UUID/AT+CHAR. See
+    configure()'s docstring: doing so on a module that already holds those
+    values is destructive on real hardware, not just redundant."""
+
+    def test_rename_only_touches_name_and_reset(self):
+        ns = load_firmware()
+        ble, comms = ns["ble"], ns["communication"]
+        comms.bluetooth.time.sleep = lambda _seconds: None
+
+        def answer(data):
+            ble.uart.written.append(data)
+            ble.uart.feed(b"OK\r\n")
+
+        ble.uart.write = answer
+
+        self.assertTrue(ble.rename("Ella"))
+        self.assertEqual(
+            [w.decode().strip() for w in ble.uart.written],
+            ["AT", "AT+NAMEElla", "AT+RESET", "AT"],
+        )
+
+    def test_rename_reports_what_the_module_refused(self):
+        ns = load_firmware()
+        ble, comms = ns["ble"], ns["communication"]
+        comms.bluetooth.time.sleep = lambda _seconds: None
+
+        def answer(data):
+            ble.uart.written.append(data)
+            ble.uart.feed(b"ERROR\r\n")
+
+        ble.uart.write = answer
+
+        self.assertFalse(ble.rename("Ella"))
+
+
+class TestSelfConfiguring(unittest.TestCase):
+    """Gated on config.json's "already configured" flag (stubbed here via
+    roboxlib.ble_configured_state), not run unconditionally: confirmed on
+    real hardware that configure()'s AT+UUID/AT+CHAR are destructive, not
+    just redundant, on a module that already holds those values -- see
+    BluetoothCommunuication.configure's docstring. A swapped-in replacement
+    module going undetected (this clone has no AT query form) is the
+    accepted cost of that."""
+
+    def test_configures_once_when_never_configured(self):
+        ns = load_firmware()
+        ble, comms, roboxlib = ns["ble"], ns["communication"], ns["roboxlib"]
+        roboxlib.ble_configured_state[0] = False
+        comms.bluetooth.time.sleep = lambda _seconds: None
+
+        def answer(data):
+            ble.uart.written.append(data)
+            ble.uart.feed(b"OK\r\n")
+
+        ble.uart.write = answer
+
+        self.assertTrue(ns["ensure_ble_configured"]())
+        self.assertTrue(roboxlib.ble_configured_state[0])
+        self.assertEqual(
+            [w.decode().strip() for w in ble.uart.written],
+            [
+                "AT",
+                "AT+UUIDFFE0",
+                "AT+CHARFFE1",
+                "AT+NAME" + roboxlib.DEFAULT_BLE_NAME,
+                "AT+RESET",
+                "AT",
+            ],
+        )
+
+    def test_skips_when_already_configured(self):
+        ns = load_firmware()
+        ble, roboxlib = ns["ble"], ns["roboxlib"]
+        roboxlib.ble_configured_state[0] = True
+
+        self.assertFalse(ns["ensure_ble_configured"]())
+        self.assertEqual(ble.uart.written, [])
+
+    def test_leaves_the_flag_unset_when_the_module_refuses(self):
+        ns = load_firmware()
+        ble, comms, roboxlib = ns["ble"], ns["communication"], ns["roboxlib"]
+        roboxlib.ble_configured_state[0] = False
+        comms.bluetooth.time.sleep = lambda _seconds: None
+
+        def answer(data):
+            ble.uart.written.append(data)
+            ble.uart.feed(b"ERROR\r\n")
+
+        ble.uart.write = answer
+
+        self.assertFalse(ns["ensure_ble_configured"]())
+        self.assertFalse(roboxlib.ble_configured_state[0])
+
+
+class TestRenameDevice(unittest.TestCase):
+    def test_rename_reprovisions_the_module_and_persists_the_name(self):
+        ns = load_firmware()
+        ble, comms, roboxlib = ns["ble"], ns["communication"], ns["roboxlib"]
+        comms.bluetooth.time.sleep = lambda _seconds: None
+
+        drain(ns)
+
+        def answer(data):
+            ble.uart.written.append(data)
+            ble.uart.feed(b"OK\r\n")
+
+        ble.uart.write = answer
+
+        ns["dispatch_command"](ble, "rename_device_MyRobot")
+        drain(ns)
+
+        self.assertEqual(roboxlib.ble_name_state[0], "MyRobot")
+        self.assertEqual(
+            [
+                w.decode().strip()
+                for w in ble.uart.written
+                if not w.startswith(bytes([p.SOH]))
+            ],
+            ["AT", "AT+NAMEMyRobot", "AT+RESET", "AT"],
+        )
+        self.assertEqual(
+            [r["type"] for r in replies(ble)],
+            ["connect", "renaming", "renamed"],
+        )
+        self.assertEqual(
+            [r["message"] for r in replies(ble) if r["type"] == "renamed"],
+            ["MyRobot"],
+        )
+
+    def test_rename_reports_an_error_when_the_module_refuses(self):
+        ns = load_firmware()
+        ble, comms, roboxlib = ns["ble"], ns["communication"], ns["roboxlib"]
+        comms.bluetooth.time.sleep = lambda _seconds: None
+        drain(ns)
+
+        def answer(data):
+            ble.uart.written.append(data)
+            ble.uart.feed(b"ERROR\r\n")
+
+        ble.uart.write = answer
+
+        ns["dispatch_command"](ble, "rename_device_MyRobot")
+        drain(ns)
+
+        self.assertEqual(roboxlib.ble_name_state[0], roboxlib.DEFAULT_BLE_NAME)
+        self.assertEqual(
+            [r["type"] for r in replies(ble)], ["connect", "renaming", "error"]
+        )
 
 
 class TestCommandGating(unittest.TestCase):
@@ -331,6 +604,46 @@ class TestCommandGating(unittest.TestCase):
             ["Upload did not verify, refusing to run it"],
         )
 
+    def test_existing_program_can_be_verified_after_restart(self):
+        ns = load_firmware()
+        ble = ns["ble"]
+        program = b"print('persisted')\n"
+        expected_crc = p.program_checksum(program.decode())
+
+        with tempfile.NamedTemporaryFile() as stored:
+            stored.write(program)
+            stored.flush()
+            ns["framed_sessions"][ble] = ns["FramedSession"](ble, stored.name)
+
+            ns["dispatch_command"](
+                ble, "verify_program_%08x" % expected_crc
+            )
+            drain(ns)
+
+        self.assertTrue(ns["framed_sessions"][ble].verified)
+        self.assertEqual(
+            [r["message"] for r in replies(ble) if r["type"] == "verified"],
+            [{"ok": True}],
+        )
+
+    def test_existing_program_with_different_checksum_stays_unverified(self):
+        ns = load_firmware()
+        ble = ns["ble"]
+
+        with tempfile.NamedTemporaryFile() as stored:
+            stored.write(b"print('persisted')\n")
+            stored.flush()
+            ns["framed_sessions"][ble] = ns["FramedSession"](ble, stored.name)
+
+            ns["dispatch_command"](ble, "verify_program_00000000")
+            drain(ns)
+
+        self.assertFalse(ns["framed_sessions"][ble].verified)
+        self.assertEqual(
+            [r["message"] for r in replies(ble) if r["type"] == "verified"],
+            [{"ok": False}],
+        )
+
     def test_program_text_spelling_a_command_is_not_executed(self):
         """The reason frames exist at all."""
         ns = load_firmware()
@@ -340,6 +653,526 @@ class TestCommandGating(unittest.TestCase):
         ns["poll"](ble)
 
         self.assertEqual(ns["machine"].resets, 0)
+
+
+class FakeColorSensor:
+    """Returns readings from a fixed queue, one per call.
+
+    calibration/samples mirror the real ColorSensor's shape (see
+    roboxlib.py) closely enough that the real color_calibration_status()
+    logic, reimplemented in load_firmware()'s fake roboxlib module below,
+    exercises the same "is this colour calibrated" rules a real sensor
+    would.
+    """
+
+    def __init__(self, readings=((1, 2, 3),)):
+        self.readings = list(readings)
+        self.calibrated = []
+        self.palette = {}
+        self.calibration = {
+            "white": list(_cal.DEFAULT["white"]),
+            "black": list(_cal.DEFAULT["black"]),
+        }
+        self.samples = {}
+
+    def readColor(self):
+        if len(self.readings) > 1:
+            return self.readings.pop(0)
+        return self.readings[0]
+
+    def closest_colour_name(self, rgb=None):
+        """Mirrors roboxlib.ColorSensor.closest_colour_name: a fresh reading
+        by default, matched against this sensor's own calibrated palette
+        (falling back to STANDARD_COLORS for anything not in it)."""
+        if rgb is None:
+            rgb = self.readColor()
+        return closest_color_name(rgb, self.palette)
+
+    def calibrate_white(self):
+        self.calibration["white"] = [999.0, 999.0, 999.0]
+        self.calibrated.append("white")
+
+    def calibrate_black(self):
+        self.calibration["black"] = [1.0, 1.0, 1.0]
+        self.calibrated.append("black")
+
+    def reset_white(self):
+        self.calibration["white"] = list(_cal.DEFAULT["white"])
+        self.calibrated.append("white_reset")
+
+    def reset_black(self):
+        self.calibration["black"] = list(_cal.DEFAULT["black"])
+        self.calibrated.append("black_reset")
+
+    def calibrate_palette(self, name):
+        self.samples[name] = (1, 2, 3)
+        self.calibrated.append(name)
+
+    def reset_palette(self, name):
+        self.samples.pop(name, None)
+        self.calibrated.append(name + "_reset")
+
+
+class TestColorCalibration(unittest.TestCase):
+    COMMANDS = (
+        "calibrate_color_red",
+        "calibrate_color_orange",
+        "calibrate_color_yellow",
+        "calibrate_color_green",
+        "calibrate_color_blue",
+        "calibrate_color_purple",
+        "calibrate_color_black",
+        "calibrate_color_white",
+        "reset_color_red",
+        "reset_color_orange",
+        "reset_color_yellow",
+        "reset_color_green",
+        "reset_color_blue",
+        "reset_color_purple",
+        "reset_color_black",
+        "reset_color_white",
+    )
+    # *_black/*_white run the sensor's brightness-extreme methods instead of
+    # storing/clearing a palette point like every other colour does, but the
+    # sensor call and the reply happen to land on the same string either way.
+    EXPECTED = (
+        "red",
+        "orange",
+        "yellow",
+        "green",
+        "blue",
+        "purple",
+        "black",
+        "white",
+        "red_reset",
+        "orange_reset",
+        "yellow_reset",
+        "green_reset",
+        "blue_reset",
+        "purple_reset",
+        "black_reset",
+        "white_reset",
+    )
+
+    def test_missing_sensor_reports_an_error_for_every_command(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        for command in self.COMMANDS:
+            ns["dispatch_command"](usb, command)
+        drain(ns)
+
+        self.assertEqual(
+            [r["message"] for r in replies(usb) if r["type"] == "error"],
+            ["Color sensor not connected"] * len(self.COMMANDS),
+        )
+
+    def test_each_command_acts_on_its_own_point(self):
+        sensor = FakeColorSensor()
+        ns = load_firmware(color_sensor_cls=lambda: sensor)
+        usb = ns["usb"]
+
+        for command in self.COMMANDS:
+            ns["dispatch_command"](usb, command)
+        drain(ns)
+
+        self.assertEqual(sensor.calibrated, list(self.EXPECTED))
+        self.assertEqual(
+            [r["message"] for r in replies(usb) if r["type"] == "calibrated"],
+            list(self.EXPECTED),
+        )
+
+    def test_an_uncalibrated_colour_is_rejected_by_the_frame_layer(self):
+        """The whitelist in protocol.py, not the dispatcher, is the gate."""
+        ns = load_firmware()
+        ble = ns["ble"]
+
+        ble.uart.feed(command_frame("calibrate_color_turquoise"))
+        ns["poll"](ble)
+        drain(ns)
+
+        self.assertEqual(
+            [r["message"] for r in replies(ble) if r["type"] == "error"],
+            ["Unknown command: calibrate_color_turquoise"],
+        )
+
+
+class TestColorCalibrationStatus(unittest.TestCase):
+    """get_calibration_colors: one boolean per standard colour, for a
+    client to show which ones still need calibrating."""
+
+    def _status(self, ns, usb):
+        ns["dispatch_command"](usb, "get_calibration_colors")
+        drain(ns)
+        return [
+            r["message"] for r in replies(usb) if r["type"] == "calibration"
+        ][-1]["value"]
+
+    def test_all_false_without_a_sensor(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        self.assertEqual(
+            self._status(ns, usb),
+            {name: False for name in STANDARD_COLORS},
+        )
+
+    def test_all_false_when_never_calibrated(self):
+        sensor = FakeColorSensor()
+        ns = load_firmware(color_sensor_cls=lambda: sensor)
+        usb = ns["usb"]
+
+        self.assertEqual(
+            self._status(ns, usb),
+            {name: False for name in STANDARD_COLORS},
+        )
+
+    def test_reflects_exactly_the_colours_calibrated_so_far(self):
+        sensor = FakeColorSensor()
+        ns = load_firmware(color_sensor_cls=lambda: sensor)
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "calibrate_color_red")
+        ns["dispatch_command"](usb, "calibrate_color_white")
+
+        expected = {name: False for name in STANDARD_COLORS}
+        expected["red"] = True
+        expected["white"] = True
+        self.assertEqual(self._status(ns, usb), expected)
+
+    def test_reset_clears_the_flag_again(self):
+        sensor = FakeColorSensor()
+        ns = load_firmware(color_sensor_cls=lambda: sensor)
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "calibrate_color_black")
+        ns["dispatch_command"](usb, "reset_color_black")
+
+        self.assertEqual(
+            self._status(ns, usb),
+            {name: False for name in STANDARD_COLORS},
+        )
+
+
+class TestMotorCalibration(unittest.TestCase):
+    def test_a_bias_is_persisted_and_acknowledged(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "calibrate_motors_-0.35")
+        drain(ns)
+
+        self.assertEqual(ns["roboxlib"].motor_calibrations, [-0.35])
+        self.assertEqual(
+            [r["message"] for r in replies(usb) if r["type"] == "calibrated"],
+            ["motors"],
+        )
+
+    def test_positive_and_boundary_biases_round_trip(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "calibrate_motors_0.6")
+        ns["dispatch_command"](usb, "calibrate_motors_-1")
+        drain(ns)
+
+        self.assertEqual(ns["roboxlib"].motor_calibrations, [0.6, -1.0])
+
+    def test_out_of_range_or_malformed_values_are_rejected_by_the_frame_layer(
+        self,
+    ):
+        """Mirrors calibrate_color_turquoise: the whitelist in protocol.py is
+        the gate, so a bad value never reaches the dispatcher."""
+        ns = load_firmware()
+        ble = ns["ble"]
+
+        for index, bad in enumerate(("1", "2.5", "-1.01", "nope")):
+            ble.uart.feed(command_frame("calibrate_motors_" + bad, seq=index))
+            ns["poll"](ble)
+        drain(ns)
+
+        self.assertEqual(
+            [r["message"] for r in replies(ble) if r["type"] == "error"],
+            ["Unknown command: calibrate_motors_" + bad
+             for bad in ("1", "2.5", "-1.01", "nope")],
+        )
+        self.assertEqual(ns["roboxlib"].motor_calibrations, [])
+
+    def test_get_returns_the_default_when_never_calibrated(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "get_calibration_motors")
+        drain(ns)
+
+        self.assertEqual(
+            [r["message"] for r in replies(usb) if r["type"] == "calibration"],
+            [
+                {
+                    "name": "motors",
+                    "value": {
+                        "bias": 0.0,
+                        "reverse": [False, False],
+                        "swap": False,
+                    },
+                }
+            ],
+        )
+
+    def test_get_returns_the_persisted_bias(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "calibrate_motors_-0.35")
+        ns["dispatch_command"](usb, "get_calibration_motors")
+        drain(ns)
+
+        self.assertEqual(
+            [r["message"] for r in replies(usb) if r["type"] == "calibration"],
+            [
+                {
+                    "name": "motors",
+                    "value": {
+                        "bias": -0.35,
+                        "reverse": [False, False],
+                        "swap": False,
+                    },
+                }
+            ],
+        )
+
+
+class TestMotorReversalAndSwap(unittest.TestCase):
+    def _motor_calibration(self, ns, usb):
+        ns["dispatch_command"](usb, "get_calibration_motors")
+        drain(ns)
+        return [
+            r["message"] for r in replies(usb) if r["type"] == "calibration"
+        ][-1]["value"]
+
+    def test_reverse_0_is_set_absolutely_and_acknowledged(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "reverse_motor_0_1")
+        self.assertEqual(
+            self._motor_calibration(ns, usb)["reverse"], [True, False]
+        )
+
+        # Setting the same value again is a no-op, not a flip: this is what
+        # makes the command safe to resend if an ACK is lost.
+        ns["dispatch_command"](usb, "reverse_motor_0_1")
+        self.assertEqual(
+            self._motor_calibration(ns, usb)["reverse"], [True, False]
+        )
+
+        ns["dispatch_command"](usb, "reverse_motor_0_0")
+        self.assertEqual(
+            self._motor_calibration(ns, usb)["reverse"], [False, False]
+        )
+
+        self.assertEqual(
+            [r["message"] for r in replies(usb) if r["type"] == "calibrated"],
+            ["reverse_0", "reverse_0", "reverse_0"],
+        )
+
+    def test_reverse_1_is_set_independently_of_reverse_0(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "reverse_motor_1_1")
+        self.assertEqual(
+            self._motor_calibration(ns, usb)["reverse"], [False, True]
+        )
+
+    def test_swap_is_set_absolutely_and_acknowledged(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "swap_motors_1")
+        self.assertEqual(self._motor_calibration(ns, usb)["swap"], True)
+
+        ns["dispatch_command"](usb, "swap_motors_1")
+        self.assertEqual(self._motor_calibration(ns, usb)["swap"], True)
+
+        ns["dispatch_command"](usb, "swap_motors_0")
+        self.assertEqual(self._motor_calibration(ns, usb)["swap"], False)
+
+        self.assertEqual(
+            [r["message"] for r in replies(usb) if r["type"] == "calibrated"],
+            ["swap", "swap", "swap"],
+        )
+
+    def test_get_returns_the_defaults_when_never_set(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        self.assertEqual(
+            self._motor_calibration(ns, usb),
+            {"bias": 0.0, "reverse": [False, False], "swap": False},
+        )
+
+
+class TestMotorTestDrive(unittest.TestCase):
+    def test_move_forward_drives_both_sides_forward(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "move_forward")
+
+        self.assertEqual(
+            ns["roboxlib"].motor_runs,
+            [(ns["TEST_MOTOR_SPEED"], ns["TEST_MOTOR_SPEED"])],
+        )
+
+    def test_move_backward_drives_both_sides_backward(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "move_backward")
+
+        self.assertEqual(
+            ns["roboxlib"].motor_runs,
+            [(-ns["TEST_MOTOR_SPEED"], -ns["TEST_MOTOR_SPEED"])],
+        )
+
+    def test_move_left_pivots_left(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "move_left")
+
+        self.assertEqual(
+            ns["roboxlib"].motor_runs,
+            [(-ns["TEST_MOTOR_SPEED"], ns["TEST_MOTOR_SPEED"])],
+        )
+
+    def test_move_right_pivots_right(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "move_right")
+
+        self.assertEqual(
+            ns["roboxlib"].motor_runs,
+            [(ns["TEST_MOTOR_SPEED"], -ns["TEST_MOTOR_SPEED"])],
+        )
+
+    def test_stop_motors_stops_both(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "move_forward")
+        ns["dispatch_command"](usb, "stop_motors")
+
+        self.assertEqual(
+            ns["roboxlib"].motor_runs,
+            [(ns["TEST_MOTOR_SPEED"], ns["TEST_MOTOR_SPEED"]), (0, 0)],
+        )
+
+    def test_starting_a_program_stops_a_test_drive_first(self):
+        """A moving test drive must not fight the program for the pins, even
+        when the start attempt itself is about to be refused."""
+        ns = load_firmware()
+        ble = ns["ble"]
+
+        ns["dispatch_command"](ble, "move_forward")
+        ns["dispatch_command"](ble, "start_program")
+
+        self.assertEqual(
+            ns["roboxlib"].motor_runs,
+            [(ns["TEST_MOTOR_SPEED"], ns["TEST_MOTOR_SPEED"]), (0, 0)],
+        )
+
+
+class TestColorMode(unittest.TestCase):
+    def test_missing_sensor_reports_an_error_and_never_enters_the_mode(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "color_mode")
+        drain(ns)
+
+        self.assertEqual(
+            [r["message"] for r in replies(usb) if r["type"] == "error"],
+            ["Color sensor not connected"],
+        )
+        self.assertIsNone(ns["color_mode_comm"])
+
+    def test_readings_repeat_on_interval_until_another_command_arrives(self):
+        # USB has no send pacing of its own, so this exercises the mode's
+        # timing logic without BLE's link-rate throttling in the way.
+        ns = load_firmware(color_sensor_cls=lambda: FakeColorSensor(
+            [(1, 2, 3), (4, 5, 6), (7, 8, 9)]
+        ))
+        usb = ns["usb"]
+
+        clock = [0]
+        ns["time"].ticks_ms = lambda: clock[0]
+
+        ns["dispatch_command"](usb, "color_mode")
+        self.assertIs(ns["color_mode_comm"], usb)
+
+        # Due immediately: turning the mode on should not wait one interval.
+        ns["send_color_if_due"]()
+        # Not due again yet.
+        ns["send_color_if_due"]()
+        drain(ns)
+
+        colors = [r["message"] for r in replies(usb) if r["type"] == "color"]
+        self.assertEqual(
+            colors, [{"r": 1, "g": 2, "b": 3, "name": "black"}]
+        )
+
+        clock[0] += ns["COLOR_MODE_INTERVAL_MS"]
+        ns["send_color_if_due"]()
+        drain(ns)
+
+        colors = [r["message"] for r in replies(usb) if r["type"] == "color"]
+        self.assertEqual(
+            colors,
+            [
+                {"r": 1, "g": 2, "b": 3, "name": "black"},
+                {"r": 4, "g": 5, "b": 6, "name": "black"},
+            ],
+        )
+
+        # Any other command exits colour mode, even one that does nothing
+        # else observable.
+        ns["dispatch_command"](usb, "disconnect_device")
+        self.assertIsNone(ns["color_mode_comm"])
+
+        clock[0] += ns["COLOR_MODE_INTERVAL_MS"] * 3
+        ns["send_color_if_due"]()
+        drain(ns)
+
+        colors = [r["message"] for r in replies(usb) if r["type"] == "color"]
+        self.assertEqual(
+            colors,
+            [
+                {"r": 1, "g": 2, "b": 3, "name": "black"},
+                {"r": 4, "g": 5, "b": 6, "name": "black"},
+            ],
+        )
+
+    def test_a_calibrated_palette_point_wins_over_the_default_guess(self):
+        # (100, 50, 10) is nearer STANDARD_COLORS' idealised "orange" than
+        # "red" by chromaticity; calibrating "red" to this exact reading
+        # (as if a real red swatch reads this way on this sensor) has to
+        # flip the match, or the calibration is not doing anything.
+        sensor = FakeColorSensor([(100, 50, 10)])
+        sensor.palette = {"red": (100, 50, 10)}
+        ns = load_firmware(color_sensor_cls=lambda: sensor)
+        usb = ns["usb"]
+
+        ns["dispatch_command"](usb, "color_mode")
+        ns["send_color_if_due"]()
+        drain(ns)
+
+        colors = [r["message"] for r in replies(usb) if r["type"] == "color"]
+        self.assertEqual(
+            colors, [{"r": 100, "g": 50, "b": 10, "name": "red"}]
+        )
 
 
 class TestOutgoingOrder(unittest.TestCase):
@@ -424,7 +1257,7 @@ class TestOutgoingLoss(unittest.TestCase):
             [r["message"] for r in replies(usb) if r["type"] == "console"],
             [str(number) for number in range(1, 101)],
         )
-        self.assertEqual(comms.dropped_message_count, 0)
+        self.assertEqual(comms.queue.dropped_message_count, 0)
 
     def test_the_draining_thread_never_waits_for_room(self):
         """The main loop cannot wait on a queue only it can empty."""
@@ -454,7 +1287,7 @@ class TestOutgoingLoss(unittest.TestCase):
         drain(ns)
 
         sent = [r["message"] for r in replies(usb) if r["type"] == "console"]
-        self.assertEqual(sent[0], comms.DROP_NOTICE % overrun)
+        self.assertEqual(sent[0], comms.queue.DROP_NOTICE % overrun)
         self.assertEqual(
             sent[1:],
             [

@@ -1,0 +1,103 @@
+name: Build firmware UF2
+
+# Builds the custom frozen firmware (see docs/RELEASE.md) via the same
+# Docker path `./tools/pico release`/`deploy` use locally, so CI produces
+# exactly what a dev's machine would. On a push to main (or a manual run),
+# it also publishes a "latest" GitHub Release carrying the UF2 under a
+# fixed name, so anything -- the website included -- can fetch the current
+# build from a stable URL with no API calls:
+#
+#   https://github.com/<owner>/<repo>/releases/latest/download/latest.uf2
+#
+# Pull requests only build + run the test suite, to catch a broken build
+# before merge; they never publish.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the repo (with the MicroPython/pico-sdk submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install host-side dev dependencies
+        run: python3 -m pip install --user -r requirements-dev.txt
+
+      - name: Run the offline test suite
+        run: ./tools/run-tests
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the firmware cross-compile toolchain image
+        uses: docker/build-push-action@v6
+        with:
+          context: firmware
+          tags: robox-fw-build:latest
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Lets `make` pick up where a previous run left off (frozen-module
+      # freezing + linking, not the whole tinyusb/pico-sdk/mbedtls tree)
+      # instead of a full cold rebuild every time.
+      - name: Cache the incremental firmware build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/mp-build-docker
+            firmware/vendor/micropython/mpy-cross/build-docker
+          key: fw-build-${{ hashFiles('firmware/manifest.py', 'src/**/*.py', 'firmware/Dockerfile') }}
+          restore-keys: |
+            fw-build-
+
+      - name: Check the firmware toolchain
+        run: ./tools/pico fw-doctor
+
+      - name: Build the release UF2
+        run: ./tools/pico release latest.uf2
+
+      - name: Also name the artifact after the firmware version
+        id: version
+        run: |
+          version="$(grep -oE 'CURRENT_FIRMWARE_VERSION = "[^"]+"' src/main.py | sed -E 's/.*"([^"]+)"/\1/')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          cp latest.uf2 "robox-${version}.uf2"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: robox-firmware-${{ steps.version.outputs.version }}-${{ github.sha }}
+          path: |
+            latest.uf2
+            robox-${{ steps.version.outputs.version }}.uf2
+          retention-days: 30
+
+      - name: Publish/update the "latest" release
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest firmware build (${{ steps.version.outputs.version }})
+          body: |
+            Automatically built from `${{ github.sha }}`.
+
+            `latest.uf2` is a stable name for the current build -- fetch it
+            from `https://github.com/${{ github.repository }}/releases/latest/download/latest.uf2`
+            without needing the GitHub API.
+          prerelease: false
+          make_latest: true
+          files: |
+            latest.uf2
+            robox-${{ steps.version.outputs.version }}.uf2

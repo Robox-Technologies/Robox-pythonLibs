@@ -3,6 +3,7 @@
 from binascii import crc32
 
 import protocol as p
+from debug import log, log_error
 
 FRAME_PREFIX = chr(p.SOH)
 
@@ -24,15 +25,22 @@ class FramedSession:
         self.expected_lines = 0
         self.expected_crc = 0
 
-        #: True only after an END frame whose totals matched. Gates running.
         self.verified = False
-
-    # --- outbound ----------------------------------------------------------
 
     def _send_flow(self, kind):
         """Write a flow frame straight out, bypassing the message queue."""
         expected, credit = self.receiver.take_ack()
         payload = "%02x,%04x" % (expected, credit)
+        log(
+            "protocol",
+            "tx_flow",
+            level=1,
+            seq=self.comm.out_seq,
+            kind=kind,
+            expected=expected,
+            credit=credit,
+            bytes=len(payload),
+        )
         self.comm.write_raw(
             p.encode_frame(self.comm.next_out_seq(), kind, payload.encode())
         )
@@ -41,24 +49,24 @@ class FramedSession:
         """Queue a device message. The interface frames it."""
         self.comm.write_message(message_type, content)
 
-    # --- inbound -----------------------------------------------------------
-
     def feed(self, line):
         """Process one framed line. Returns command names to dispatch."""
         frames, damage = self.reader.feed((line + "\n").encode())
         self.receiver.note_corruption(damage)
+        if damage:
+            log("protocol", "rx_corruption", level=1, count=damage)
 
         commands = []
         for frame in frames:
-            # BEGIN and COMMAND are self-contained: they start a new
-            # interaction rather than continuing a stream, so they
-            # resynchronise the sequence.
-            #
-            # The sequence space exists to order the frames *within* one
-            # upload. Without this, a second upload restarts at sequence 0
-            # while the receiver still expects N and every frame reads as a
-            # stale duplicate, and a reconnecting client's firmware check is
-            # ignored the same way. The checksum still protects both.
+            log(
+                "protocol",
+                "rx_frame",
+                level=1,
+                seq=frame.seq,
+                kind=frame.kind,
+                bytes=len(frame.payload),
+                payload=frame.payload.hex(),
+            )
             if frame.kind in (p.KIND_BEGIN, p.KIND_COMMAND):
                 self.receiver.reset(frame.seq)
 
@@ -67,9 +75,6 @@ class FramedSession:
             command = self._apply(frame)
             if command:
                 commands.append(command)
-
-        if self.receiver.needs_nak() or self.receiver.should_ack():
-            self.flush()
 
         return commands
 
@@ -92,10 +97,10 @@ class FramedSession:
         elif kind == p.KIND_END:
             self._end(frame)
         elif kind == p.KIND_COMMAND:
-            # The only place a payload is read as a command, and only because
-            # its frame says so. Data frames are never inspected.
             name = frame.text()
-            if name not in p.COMMAND_NAMES:
+            log("command", "received", level=1, name=name)
+            if not p.is_command_name(name):
+                log("protocol", "unknown_command", name=name)
                 self.reply("error", "Unknown command: {}".format(name))
                 return None
             return name
@@ -107,6 +112,7 @@ class FramedSession:
         try:
             self.expected_lines, self.expected_crc = p.parse_begin(frame.payload)
         except Exception:
+            log("upload", "malformed_begin", level=1)
             self.reply("error", "Malformed upload header")
             return
 
@@ -118,7 +124,10 @@ class FramedSession:
         try:
             self.out_file = open(self.filename, "w")
         except Exception as exc:
+            log_error("upload", exc, event="open_failed")
             self.reply("error", "Could not open program file: {}".format(exc))
+        else:
+            log("upload", "started", level=1, lines=self.expected_lines)
 
     def _store(self, frame):
         if not self.out_file:
@@ -130,16 +139,22 @@ class FramedSession:
         try:
             text = payload.decode()
         except Exception:
-            # Cannot happen for an intact frame: the checksum already passed.
+            log("upload", "undecodable_line", level=1)
             self.reply("error", "Undecodable program line")
             return
 
         line = text + "\n"
         self.out_file.write(line)
-        # Running CRC over exactly what was written, so the comparison at END
-        # covers the stored file rather than what we believe we received.
         self.running_crc = crc32(line.encode(), self.running_crc) & 0xFFFFFFFF
         self.stored_lines += 1
+        if self.stored_lines == 1 or self.stored_lines % 10 == 0:
+            log(
+                "upload",
+                "stored",
+                level=1,
+                lines=self.stored_lines,
+                bytes=len(line),
+            )
 
     def _end(self, frame):
         if not self.out_file:
@@ -157,10 +172,14 @@ class FramedSession:
         lines_ok = self.stored_lines == self.expected_lines
         crc_ok = declared is not None and self.running_crc == declared
         self.verified = lines_ok and crc_ok
+        log(
+            "upload",
+            "verified" if self.verified else "failed",
+            level=1,
+            lines=self.stored_lines,
+            crc="%08x" % self.running_crc,
+        )
 
-        # A dict, not a pre-built JSON string: write_message runs json.dumps
-        # over it, so a string would arrive at the client escaped inside
-        # another string and its verdict check would never match.
         self.reply(
             "uploaded",
             {
@@ -171,6 +190,27 @@ class FramedSession:
                 "want": "%08x" % (declared or 0),
             },
         )
+
+    def verify_existing_program(self, expected_crc):
+        """Verify the existing program without modifying it."""
+        if self.out_file:
+            self.verified = False
+            return False
+
+        try:
+            with open(self.filename, "rb") as program:
+                actual_crc = 0
+                while True:
+                    chunk = program.read(256)
+                    if not chunk:
+                        break
+                    actual_crc = crc32(chunk, actual_crc) & 0xFFFFFFFF
+        except Exception:
+            self.verified = False
+            return False
+
+        self.verified = actual_crc == expected_crc
+        return self.verified
 
     def close(self):
         if self.out_file:
