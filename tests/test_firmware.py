@@ -66,6 +66,9 @@ def load_firmware(color_sensor_cls=RaisingColorSensor):
         def off(self):
             pass
 
+        def toggle(self):
+            pass
+
     machine.Pin = Pin
     machine.UART = FakeUart
     machine.resets = 0
@@ -84,6 +87,18 @@ def load_firmware(color_sensor_cls=RaisingColorSensor):
     clock.ticks_ms = lambda: int(time.monotonic() * 1000)
     clock.ticks_add = lambda ticks, delta: ticks + delta
     clock.ticks_diff = lambda later, earlier: later - earlier
+    clock.sleep_ms = lambda ms: None
+
+    # BOOTSEL, read through rp2.bootsel_button(). Tests set rp2._pressed.
+    rp2 = types.ModuleType("rp2")
+    rp2._pressed = False
+    rp2.reads = 0
+
+    def bootsel_button():
+        rp2.reads += 1
+        return int(rp2._pressed)
+
+    rp2.bootsel_button = bootsel_button
 
     roboxlib = types.ModuleType("roboxlib")
     roboxlib.ColorSensor = color_sensor_cls
@@ -164,6 +179,9 @@ def load_firmware(color_sensor_cls=RaisingColorSensor):
         def stop_motors(self):
             self.run_motors(0, 0)
 
+        def cut_power(self):
+            roboxlib.motor_runs.append("cut")
+
     roboxlib.Motors = FakeMotors
 
     def color_calibration_status(sensor):
@@ -183,8 +201,9 @@ def load_firmware(color_sensor_cls=RaisingColorSensor):
 
     saved = {
         name: sys.modules.get(name)
-        for name in ("machine", "roboxlib", "time")
+        for name in ("machine", "roboxlib", "time", "rp2")
     }
+    sys.modules["rp2"] = rp2
     sys.modules["machine"] = machine
     sys.modules["roboxlib"] = roboxlib
     sys.modules["time"] = clock
@@ -226,6 +245,7 @@ def load_firmware(color_sensor_cls=RaisingColorSensor):
                 sys.modules[name] = module
 
     ns["machine"] = machine
+    ns["rp2"] = rp2
     ns["communication"] = communication
     ns["roboxlib"] = roboxlib
 
@@ -1301,3 +1321,199 @@ class TestOutgoingLoss(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StopLoop(Exception):
+    """Raised by a test's fake machine.reset to leave a never-returning loop."""
+
+
+class TestBootselButton(unittest.TestCase):
+    """Holding BOOTSEL starts the stored program; holding it again stops it."""
+
+    def setUp(self):
+        self.ns = load_firmware()
+        self.rp2 = self.ns["rp2"]
+        self.started = []
+        self.loops = []
+
+        fake_thread = types.SimpleNamespace(
+            start_new_thread=lambda fn, args: self.started.append((fn, args))
+        )
+        self.ns["_thread"] = fake_thread
+        self.ns["standalone_loop"] = lambda: self.loops.append(True)
+
+        self.program = tempfile.NamedTemporaryFile(suffix=".py")
+        self.program.write(b"print('hi')\n")
+        self.program.flush()
+        self.ns["PROGRAM_FILENAME"] = self.program.name
+
+        # A private clock: the stub time module is shared with the
+        # communication modules, whose pacing needs real time to pass.
+        self.clock = [10_000]
+        self.ns["time"] = types.SimpleNamespace(
+            ticks_ms=lambda: self.clock[0],
+            ticks_diff=lambda later, earlier: later - earlier,
+            sleep_ms=lambda ms: None,
+        )
+
+    def tearDown(self):
+        self.program.close()
+
+    def read(self, pressed):
+        """One read of the button, as the main loop would do it."""
+        self.rp2._pressed = pressed
+        self.clock[0] += self.ns["BOOTSEL_POLL_MS"]
+        self.ns["poll_bootsel"]()
+
+    def hold(self, reads):
+        for _ in range(reads):
+            self.read(True)
+
+    def arm(self):
+        """The button starts disarmed, so let go of it once first."""
+        self.read(False)
+
+    def test_a_hold_starts_the_stored_program_without_communication(self):
+        self.arm()
+        self.hold(self.ns["BOOTSEL_HOLD_POLLS"])
+
+        self.assertEqual(len(self.started), 1)
+        _, args = self.started[0]
+        self.assertIsInstance(args[0], self.ns["NullCommunication"])
+        self.assertTrue(self.ns["program_running"])
+        self.assertEqual(self.loops, [True])
+
+    def test_it_starts_even_while_a_client_is_connected(self):
+        self.ns["dispatch_command"](self.ns["ble"], "firmware_check")
+        self.arm()
+        self.hold(self.ns["BOOTSEL_HOLD_POLLS"])
+
+        self.assertEqual(len(self.started), 1)
+
+    def test_a_short_press_does_nothing(self):
+        self.arm()
+        self.hold(self.ns["BOOTSEL_HOLD_POLLS"] - 1)
+        self.read(False)
+        self.hold(self.ns["BOOTSEL_HOLD_POLLS"] - 1)
+
+        self.assertEqual(self.started, [])
+
+    def test_holding_on_fires_once_and_rearms_only_after_release(self):
+        self.arm()
+        self.hold(self.ns["BOOTSEL_HOLD_POLLS"] * 4)
+        self.assertEqual(len(self.started), 1)
+
+        self.ns["program_running"] = False
+        self.read(False)
+        self.hold(self.ns["BOOTSEL_HOLD_POLLS"])
+        self.assertEqual(len(self.started), 2)
+
+    def test_a_button_held_through_boot_does_nothing_until_released(self):
+        self.hold(self.ns["BOOTSEL_HOLD_POLLS"] * 2)
+
+        self.assertEqual(self.started, [])
+
+    def test_the_button_is_read_only_every_poll_interval(self):
+        self.arm()
+        before = self.rp2.reads
+        for _ in range(50):
+            self.ns["poll_bootsel"]()
+
+        self.assertEqual(self.rp2.reads, before)
+
+    def test_no_stored_program_refuses(self):
+        self.ns["PROGRAM_FILENAME"] = self.program.name + ".missing"
+        self.arm()
+        self.hold(self.ns["BOOTSEL_HOLD_POLLS"])
+
+        self.assertEqual(self.started, [])
+        self.assertFalse(self.ns["program_running"])
+
+    def test_a_hold_during_an_upload_refuses(self):
+        ble = self.ns["ble"]
+        self.ns["framed_session"](ble).out_file = object()
+        self.arm()
+        self.hold(self.ns["BOOTSEL_HOLD_POLLS"])
+
+        self.assertEqual(self.started, [])
+        self.assertFalse(self.ns["program_running"])
+
+    def test_a_hold_stops_a_program_the_app_started(self):
+        self.ns["program_running"] = True
+        motor_runs = self.ns["roboxlib"].motor_runs
+        # Letting go is what lets the reset through.
+        self.ns["time"].sleep_ms = lambda ms: setattr(self.rp2, "_pressed", False)
+        self.arm()
+        motor_runs.clear()
+        self.hold(self.ns["BOOTSEL_HOLD_POLLS"])
+
+        self.assertEqual(self.started, [])
+        self.assertEqual(motor_runs, [(0, 0), "cut"])
+        self.assertEqual(self.ns["machine"].resets, 1)
+
+
+class TestStandaloneLoop(unittest.TestCase):
+    """While a button-started program runs, only the button is watched."""
+
+    def setUp(self):
+        self.ns = load_firmware()
+        self.rp2 = self.ns["rp2"]
+        self.events = []
+        motors = self.ns["motors"]
+        motors.stop_motors = lambda: self.events.append("stop_motors")
+        motors.cut_power = lambda: self.events.append("cut_power")
+
+        def reset():
+            self.events.append("reset")
+            raise StopLoop()
+
+        self.ns["machine"].reset = reset
+
+        def no_reading(*args, **kwargs):
+            raise AssertionError("standalone mode must not read a link")
+
+        for comm in self.ns["communications"]:
+            comm.read_lines = no_reading
+        self.ns["flush_outgoing_messages"] = no_reading
+
+        self.ns["program_running"] = True
+        self.ns["bootsel_armed"] = True
+
+    def run_loop(self, presses):
+        """Run the loop with the button reading each value in turn."""
+        readings = list(presses)
+
+        def bootsel_button():
+            pressed = readings.pop(0) if readings else False
+            self.events.append("down" if pressed else "up")
+            return int(pressed)
+
+        self.rp2.bootsel_button = bootsel_button
+        with self.assertRaises(StopLoop):
+            self.ns["standalone_loop"]()
+
+    def test_a_hold_cuts_the_motors_and_resets_once_let_go(self):
+        self.run_loop([False, True, True, True, True, True, False])
+
+        self.assertEqual(
+            self.events,
+            ["up", "down", "down", "down", "stop_motors", "cut_power",
+             "down", "down", "up", "reset"],
+            "a reset with BOOTSEL held boots into USB flashing mode",
+        )
+
+    def test_the_press_that_started_it_does_not_stop_it(self):
+        self.ns["bootsel_armed"] = False
+        holds = self.ns["BOOTSEL_HOLD_POLLS"]
+        self.run_loop([True] * holds * 2 + [False] + [True] * holds)
+
+        self.assertEqual(self.events.count("stop_motors"), 1)
+        self.assertEqual(self.events[-2:], ["up", "reset"])
+
+    def test_the_program_returning_does_not_stop_the_robot(self):
+        """Website programs start the motors and return at once."""
+        self.ns["program_running"] = False
+        holds = self.ns["BOOTSEL_HOLD_POLLS"]
+        self.run_loop([False] * 20 + [True] * holds)
+
+        self.assertEqual(self.events.index("stop_motors"), 20 + holds)
