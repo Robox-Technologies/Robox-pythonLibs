@@ -84,6 +84,7 @@ def load_firmware(color_sensor_cls=RaisingColorSensor):
     clock.ticks_ms = lambda: int(time.monotonic() * 1000)
     clock.ticks_add = lambda ticks, delta: ticks + delta
     clock.ticks_diff = lambda later, earlier: later - earlier
+    clock.sleep_ms = lambda ms: time.sleep(ms / 1000)
 
     roboxlib = types.ModuleType("roboxlib")
     roboxlib.ColorSensor = color_sensor_cls
@@ -191,7 +192,7 @@ def load_firmware(color_sensor_cls=RaisingColorSensor):
 
     # A fresh communication module each time, so its global outgoing queue does
     # not leak between tests.
-    for name in ("communication", "framed", "main"):
+    for name in ("communication", "framed", "controller", "main"):
         sys.modules.pop(name, None)
 
     try:
@@ -1297,6 +1298,217 @@ class TestOutgoingLoss(unittest.TestCase):
                 )
             ],
         )
+
+
+def controller_packet(packet_type, seq, a=0, b=0):
+    import controller
+
+    return controller.encode(packet_type, seq, a, b)
+
+
+def drive(seq, left, right):
+    return controller_packet(0x01, seq, left, right)
+
+
+def exit_packet(seq):
+    return controller_packet(0x04, seq)
+
+
+class TestControllerMode(unittest.TestCase):
+    """The framed handshake into controller mode and every way back out."""
+
+    def run_controller(self, ns, comm, chunks):
+        """Enter controller mode on `comm` with a fake clock. Each loop sleep
+        delivers the next scripted chunk. Returns the bytes written while the
+        loop ran, which must be none."""
+        # Start from the real clock, so BLE pacing deadlines set in here still
+        # make sense once the real clock is back for the framed checks after.
+        clock = [ns["time"].ticks_ms()]
+        chunks = list(chunks)
+        written_at_entry = []
+
+        real_read_raw = comm.read_raw
+
+        def read_raw():
+            # The loop's first read: everything before it is the handshake.
+            if not written_at_entry:
+                written_at_entry.append(len(sent_bytes(comm)))
+            return real_read_raw()
+
+        comm.read_raw = read_raw
+
+        def sleep_ms(ms):
+            clock[0] += ms
+            if chunks:
+                chunk = chunks.pop(0)
+                if chunk:
+                    comm.uart.feed(chunk)
+
+        restore = self.patch_clock(ns, lambda: clock[0], sleep_ms)
+
+        self.assertIs(ns["controller_request"], comm)
+        ns["controller_request"] = None
+        try:
+            ns["enter_controller"](comm)
+        finally:
+            restore()
+
+        entry = written_at_entry[0] if written_at_entry else len(sent_bytes(comm))
+        return sent_bytes(comm)[entry:]
+
+    def patch_clock(self, ns, ticks_ms, sleep_ms):
+        """Point every module's clock at the fake one, and put it back after.
+        The communication submodules outlive load_firmware, so their `time`
+        may be an earlier test's module: a patch left there leaks."""
+        comms = ns["communication"]
+        modules = {
+            id(m): m
+            for m in (ns["time"], comms.queue.time, comms.bluetooth.time)
+        }
+        saved = [(m, m.ticks_ms, m.sleep_ms) for m in modules.values()]
+
+        def restore():
+            for module, old_ticks, old_sleep in saved:
+                module.ticks_ms = old_ticks
+                module.sleep_ms = old_sleep
+
+        self.addCleanup(restore)
+        for module in modules.values():
+            module.ticks_ms = ticks_ms
+            module.sleep_ms = sleep_ms
+        return restore
+
+    def request(self, ns, comm):
+        comm.uart.feed(command_frame("controller_mode"))
+        ns["poll"](comm)
+
+    def test_reply_is_the_last_framed_message_then_the_link_is_silent(self):
+        ns = load_firmware()
+        ble = ns["ble"]
+        ble.write_message("console", "queued before the switch")
+
+        self.request(ns, ble)
+        during = self.run_controller(
+            ns, ble, [drive(0, 60, 60), None, exit_packet(1)]
+        )
+
+        self.assertEqual(during, b"")
+        frames, _ = p.FrameReader().feed(sent_bytes(ble))
+        self.assertEqual(frames[-1].kind, p.KIND_REPLY)
+        self.assertEqual(
+            json.loads(frames[-1].payload.decode()),
+            {"type": "controller_mode", "message": "ready"},
+        )
+        self.assertIn("console", [r["type"] for r in replies(ble)])
+
+    def test_drive_reaches_the_motors_and_exit_stops_them(self):
+        ns = load_firmware()
+        ble = ns["ble"]
+        runs = ns["roboxlib"].motor_runs
+
+        self.request(ns, ble)
+        self.run_controller(
+            ns,
+            ble,
+            [drive(0, 60, 60), drive(1, -60, -60), drive(2, 100, -100),
+             drive(3, 0, 0) + exit_packet(4)],
+        )
+
+        self.assertEqual(
+            runs, [(0, 0), (60, 60), (-60, -60), (100, -100), (0, 0)]
+        )
+
+    def test_a_framed_command_right_after_exit_is_answered(self):
+        ns = load_firmware()
+        ble = ns["ble"]
+
+        self.request(ns, ble)
+        self.run_controller(
+            ns, ble, [exit_packet(0) + command_frame("firmware_check", 1)]
+        )
+        ns["poll"](ble)
+        drain(ns)
+
+        self.assertEqual(replies(ble)[-1]["type"], "firmware")
+
+    def test_silence_stops_the_motors_and_returns_to_framed(self):
+        ns = load_firmware()
+        ble = ns["ble"]
+
+        self.request(ns, ble)
+        # A framed command during the mode is noise, not a heartbeat.
+        during = self.run_controller(
+            ns, ble, [drive(0, 80, 80)] + [command_frame("firmware_check")] * 5
+        )
+
+        self.assertEqual(during, b"")
+        self.assertEqual(ns["roboxlib"].motor_runs[-1], (0, 0))
+        self.assertIsNone(ns["controller_request"])
+
+        ble.uart.feed(command_frame("firmware_check", 2))
+        ns["poll"](ble)
+        drain(ns)
+        self.assertEqual(replies(ble)[-1]["type"], "firmware")
+
+    def test_refused_while_a_program_runs(self):
+        ns = load_firmware()
+        ble = ns["ble"]
+        ns["program_running"] = True
+
+        self.request(ns, ble)
+        drain(ns)
+
+        self.assertIsNone(ns["controller_request"])
+        self.assertEqual(
+            replies(ble)[-1], {"type": "error", "message": "A program is running"}
+        )
+
+    def test_motors_stop_when_the_loop_fails(self):
+        ns = load_firmware()
+        ble = ns["ble"]
+        motors = ns["motors"]
+        real = motors.run_motors
+
+        def faulty(left, right):
+            real(left, right)
+            if (left, right) == (40, 40):
+                raise RuntimeError("driver fault")
+
+        motors.run_motors = faulty
+        self.request(ns, ble)
+        self.run_controller(ns, ble, [drive(0, 40, 40)])
+
+        self.assertEqual(ns["roboxlib"].motor_runs[-1], (0, 0))
+
+    def test_usb_disables_ctrl_c_only_while_driving(self):
+        ns = load_firmware()
+        usb = ns["usb"]
+        calls = []
+        micropython = types.ModuleType("micropython")
+        micropython.kbd_intr = calls.append
+        saved = sys.modules.get("micropython")
+        sys.modules["micropython"] = micropython
+        self.addCleanup(
+            lambda: sys.modules.pop("micropython", None)
+            if saved is None
+            else sys.modules.__setitem__("micropython", saved)
+        )
+
+        chunks = [drive(0, 3, 3), exit_packet(3)]
+        usb.read_raw = lambda: chunks.pop(0) if chunks else None
+        clock = [0]
+
+        def sleep_ms(ms):
+            clock[0] += ms
+
+        self.patch_clock(ns, lambda: clock[0], sleep_ms)
+
+        ns["dispatch_command"](usb, "controller_mode")
+        ns["controller_request"] = None
+        ns["enter_controller"](usb)
+
+        self.assertEqual(calls, [-1, 3])
+        self.assertIn((3, 3), ns["roboxlib"].motor_runs)
 
 
 if __name__ == "__main__":

@@ -20,6 +20,18 @@ class CommunicationInterface:
             lines.append(line)
         return lines
 
+    def read_raw(self):
+        """Waiting bytes with no line handling, or None. Never blocks."""
+        raise NotImplementedError
+
+    def unread(self, data):
+        """Give bytes back so the next read_line sees them first."""
+        raise NotImplementedError
+
+    def discard_input(self):
+        """Forget any partly read line."""
+        raise NotImplementedError
+
     def write_message(self, message_type, content):
         queue_outgoing_message(self, message_type, content)
 
