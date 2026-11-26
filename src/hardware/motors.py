@@ -5,6 +5,7 @@ from .storage import load_motor_calibration, load_motor_reverse, load_motor_swap
 
 class Motors:
     def __init__(self, a1_pin=13, a2_pin=12, b1_pin=11, b2_pin=10):
+        self.pins = (a1_pin, a2_pin, b1_pin, b2_pin)
         self.a1 = PWM(Pin(a1_pin, Pin.OUT))
         self.a1.freq(500)
         self.a2 = PWM(Pin(a2_pin, Pin.OUT))
@@ -43,6 +44,16 @@ class Motors:
 
     def stop_motors(self):
         self.run_motors(0, 0)
+
+    def cut_power(self):
+        """Take the pins off PWM and drive them low.
+
+        Unlike stop_motors this holds even against another Motors() on the
+        same pins, which drives the PWM hardware the pins are no longer
+        connected to. Only a fresh Motors() reconnects them.
+        """
+        for pin in self.pins:
+            Pin(pin, Pin.OUT, value=0)
 
     def run_motors_for_time(self, left_speed, right_speed, time):
         self.run_motors(left_speed, right_speed)

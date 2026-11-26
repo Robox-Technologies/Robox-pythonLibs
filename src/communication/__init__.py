@@ -8,6 +8,7 @@ from .bluetooth import (
     BluetoothCommunication,
 )
 from .messages import generate_message
+from .null import NullCommunication
 from .queue import (
     MAX_QUEUED_MESSAGES,
     flush_outgoing_messages,

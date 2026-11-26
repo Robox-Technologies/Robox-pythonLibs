@@ -1,6 +1,8 @@
+import os
 import sys
 import _thread
 import machine
+import rp2
 import time
 
 from build_info import BUILD_TYPE, DEBUG, FIRMWARE_VERSION
@@ -33,6 +35,7 @@ from roboxlib import (
 from communication import (
     USBCommunication,
     BluetoothCommunication,
+    NullCommunication,
     flush_outgoing_messages,
 )
 from framed import FRAME_PREFIX, FramedSession
@@ -54,6 +57,14 @@ MAX_LINES_PER_POLL = 128
 COLOR_MODE_INTERVAL_MS = 250
 
 TEST_MOTOR_SPEED = 70
+
+# BOOTSEL shares the flash chip-select line, so every read briefly pauses the
+# other core (see rp2.bootsel_button). Read it rarely and ask for a hold
+# instead: three pressed reads in a row is 500-750 ms of holding.
+BOOTSEL_POLL_MS = 250
+BOOTSEL_HOLD_POLLS = 3
+REFUSE_BLINKS = 2
+REFUSE_BLINK_MS = 150
 
 LED = machine.Pin(25, machine.Pin.OUT)
 LED.on()
@@ -102,6 +113,14 @@ def ensure_ble_configured():
 
 
 program_running = False
+
+NULL_COMM = NullCommunication()
+
+last_bootsel_read = 0
+bootsel_count = 0
+# Starts disarmed so a button still held through a reset does nothing until
+# it has been let go once.
+bootsel_armed = False
 
 color_mode_comm = None
 last_color_send = 0
@@ -317,6 +336,7 @@ def dispatch_command(comm, command):
 
     elif command == "reset_device":
         log("command", "reset_device", level=1, force_flush=True)
+        motors.stop_motors()
         machine.reset()
 
     elif command == "boot_loader":
@@ -381,6 +401,140 @@ def send_color_if_due():
     )
 
 
+def bootsel_held():
+    """Read BOOTSEL once. True on the read that completes a hold.
+
+    A hold fires once; the button has to be released before it can fire
+    again, so holding past the threshold never repeats the action.
+    """
+    global bootsel_count, bootsel_armed
+
+    if not rp2.bootsel_button():
+        bootsel_count = 0
+        bootsel_armed = True
+        return False
+    if not bootsel_armed:
+        return False
+
+    bootsel_count += 1
+    if bootsel_count < BOOTSEL_HOLD_POLLS:
+        return False
+
+    bootsel_count = 0
+    bootsel_armed = False
+    return True
+
+
+def stop_robot(reason):
+    """Stop the motors, then reboot to regain control from the program thread.
+
+    _thread has no way to kill a thread, so only a reset reliably stops
+    arbitrary code. The motor pins are cut first, because user programs
+    drive their own Motors() and the pins float during the reset.
+
+    The reset waits for BOOTSEL to be let go: the boot ROM checks the
+    button on every reset, and a held button boots into USB flashing mode.
+    """
+    log("program", "bootsel_stop", level=1, reason=reason, force_flush=True)
+    motors.stop_motors()
+    motors.cut_power()
+    LED.off()
+    while rp2.bootsel_button():
+        time.sleep_ms(BOOTSEL_POLL_MS)
+    machine.reset()
+
+
+def stored_program_exists():
+    try:
+        os.stat(PROGRAM_FILENAME)
+    except OSError:
+        return False
+    return True
+
+
+def upload_in_progress():
+    """True while any interface is part-way through writing program.py."""
+    for session in framed_sessions.values():
+        if session.out_file:
+            return True
+    return False
+
+
+def blink_refusal():
+    for _ in range(REFUSE_BLINKS):
+        LED.off()
+        time.sleep_ms(REFUSE_BLINK_MS)
+        LED.on()
+        time.sleep_ms(REFUSE_BLINK_MS)
+
+
+def standalone_loop():
+    """Watch only the button while the program runs. Never returns.
+
+    No interface is read or flushed here: the robot ignores USB and
+    Bluetooth until it resets. The program returning does not end this:
+    website programs set the motors or timers going and return at once,
+    and the robot carries on until the button is held.
+    """
+    while True:
+        time.sleep_ms(BOOTSEL_POLL_MS)
+        LED.toggle()
+        if bootsel_held():
+            stop_robot("button")
+
+
+def start_standalone():
+    """Run the stored program from the button, then stop communicating."""
+    global program_running, color_mode_comm
+
+    if program_running:
+        # A program the app started: the same hold stops it.
+        stop_robot("button")
+        return
+
+    motors.stop_motors()
+    if upload_in_progress():
+        log("program", "bootsel_upload_in_progress", level=1)
+        blink_refusal()
+        return
+    if not stored_program_exists():
+        log("program", "bootsel_no_program", level=1)
+        blink_refusal()
+        return
+
+    color_mode_comm = None
+    program_running = True
+    log("program", "bootsel_start", level=1)
+    try:
+        _thread.start_new_thread(run_user_program, (NULL_COMM,))
+    except Exception as error:
+        program_running = False
+        log_error("program", error, event="bootsel_start_failed")
+        blink_refusal()
+        return
+
+    standalone_loop()
+
+
+def poll_bootsel():
+    """Read the button if it is due, and act on a completed hold."""
+    global last_bootsel_read
+
+    now = time.ticks_ms()
+    if time.ticks_diff(now, last_bootsel_read) < BOOTSEL_POLL_MS:
+        return
+    last_bootsel_read = now
+
+    held = bootsel_held()
+    # Dark while the button is down, so people know to keep holding.
+    if bootsel_count:
+        LED.off()
+    else:
+        LED.on()
+    if held:
+        start_standalone()
+
+
 ensure_ble_configured()
 log("boot", "ready", level=1)
 
@@ -392,5 +546,6 @@ while True:
             poll(comm)
 
         send_color_if_due()
+        poll_bootsel()
     except Exception as error:
         log_error("runtime", error)
